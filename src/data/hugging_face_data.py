@@ -1,41 +1,40 @@
+from pathlib import Path
+from typing import cast
+
 import pandas as pd
-from datasets import load_dataset, concatenate_datasets
-from pandas import DataFrame
+from datasets import Dataset, concatenate_datasets, load_dataset
 
+DATA_DIR = Path(__file__).resolve().parent
+def load_data(df: list, lang: str, type: str):
+    land_df = [d for d in df if lang in d["Language"]]
 
-def load_data(df: DataFrame, lang: str, type: str):
-    land_df = [data for data in df if data["Language"] == lang]
-    if len(land_df) == 0:
-        return "Wrong input"
-    if lang == "Chinese" and type == "monolingual":
-        hugging = [item["hugging face "] for item in land_df]
-        loading_data = load_dataset(hugging[0], "en-zh")
-        return loading_data
-    elif len(land_df) > 0:
-        hugging = [
-            item["hugging face "]
-            for item in land_df
-            if not pd.isna(item["hugging face "])
-        ]
-        loading_data_1, loading_data_2 = (
-            load_dataset(hugging[0]),
-            load_dataset(hugging[1]),
-        )
-        loading_data = concatenate_datasets([loading_data_1, loading_data_2])
-        return loading_data
-    else:
-        hugging = [item["hugging face "] for item in land_df]
-        loading_data = load_dataset(hugging[0])
-        return loading_data
+    if lang == "Chinese" and type == "mono":
+        hugging_paths = [item["hugging face "] for item in land_df if pd.notna(item["hugging face "])]
+        if not hugging_paths:
+            raise ValueError(f"No Hugging Face path found for {lang}")
+        return cast(Dataset, load_dataset(hugging_paths[0]))
+
+    hugging_paths = [
+        item["hugging face "]
+        for item in land_df
+        if pd.notna(item["hugging face "]) and item["hugging face "] != ""
+    ]
+
+    if not hugging_paths:
+        raise ValueError(f"No valid Hugging Face datasets found for language: {lang}")
+
+    datasets_list = [cast(Dataset, load_dataset(path, split="train")) for path in hugging_paths]
+
+    if len(datasets_list) > 1:
+        return concatenate_datasets(datasets_list)
+    return datasets_list[0]
 
 
 def get_data(lang: str, mono_or_bi: str):
-    if mono_or_bi == "mono":
-        df = pd.read_csv("reference_table_monolingual.csv")
+    file = "reference_table_monolingual.csv" if mono_or_bi=="mono" else "reference_table_bilingual.csv"
+    file_path = DATA_DIR / file
+    try:
+        df = pd.read_csv(file_path).to_dict("records")
         return load_data(df, lang, mono_or_bi)
-
-    elif mono_or_bi == "bi":
-        df = pd.read_csv("reference_table_bilingual.csv")
-        return load_data(df, lang, mono_or_bi)
-    else:
-        return "Wrong input"
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Could not find the file at: {file_path}")
