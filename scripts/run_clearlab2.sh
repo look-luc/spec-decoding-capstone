@@ -2,13 +2,14 @@
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=32G
+#SBATCH --mem=8000M
 #SBATCH --time=1:00:00
 #SBATCH --output=logs/%j.log
 #SBATCH --job-name=specdec
 #SBATCH --partition=blanca-clearlab2
 #SBATCH --account=blanca-clearlab2
 #SBATCH --qos=blanca-clearlab2
+#SBATCH --mail-type=END,FAIL
 
 export HF_HOME="/projects/$USER/.cache/huggingface"
 mkdir -p $HF_HOME

@@ -65,8 +65,8 @@ def run(config: ExperimentConfig):
             draft_tokenizer = target_tokenizer
     elif config.draft_model_type == "ngram":
         draft_tokenizer = target_tokenizer
-        draft_model = NGramModel(n=config.ngram_n, tokenizer=draft_tokenizer)
-        draft_model.train(assemble_dataset(language, 'mono')['train'])
+        draft_model = NGramModel(n=config.ngram_n, tokenizer=draft_tokenizer, vocab_size=target_model.config.vocab_size)
+        draft_model.train(assemble_dataset(language, 'mono', config.include_aya)['train'])
     else:
         raise ValueError()
 
@@ -119,7 +119,7 @@ def setup_wandb(config: ExperimentConfig):
             draft_short = target_short
     else:
         draft_short = None
-        
+
     job_type = "spec" if is_spec else "baseline"
     group = f"{target_short}__{config.language_code}"
     if is_spec:
