@@ -1,9 +1,5 @@
 """
-Distillation training loop.
-
-Supports two modes (controlled by DistillConfig.distill_mode):
-  - task_specific: SeqKD on pre-generated teacher translations (bilingual).
-  - general: causal LM fine-tuning on raw monolingual text.
+Distillation training loop. Uses a parquet data file created with `scripts/generate_teacher_logprobs`.
 """
 import logging
 import math
@@ -11,8 +7,8 @@ import os
 import time
 from dataclasses import asdict
 
+import datasets
 import torch
-import torch.nn.functional as F
 import torch.optim as optim
 import wandb
 from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]
@@ -21,12 +17,6 @@ from torch.utils.data import DataLoader
 
 from src.config.config import DistillConfig
 from src.utils import load_model
-from src.tasks.distillation.data_loader import (
-    load_general_dataset,
-    load_seqkd_dataset,
-    tokenize_general,
-    tokenize_seqkd,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +27,8 @@ def _model_short_name(model_id: str) -> str:
 
 def build_repo_name(config: DistillConfig, dataset_len: int) -> str:
     student = _model_short_name(config.student_model)
-    if config.distill_mode == "general":
-        prefix = "general-kd"
-    else:
-        teacher = _model_short_name(config.teacher_model)
-        prefix = f"seqkd-{teacher}"
-    name = f"{prefix}-{student}-{config.language_code}-{dataset_len}"
+    teacher = _model_short_name(config.teacher_model)
+    name = f"{config.task}-{teacher}-{student}-{config.language_code}-{dataset_len}"
     if config.hf_repo_id:
         return f"{config.hf_repo_id}/{name}"
     return name
@@ -54,7 +40,7 @@ def setup_wandb(config: DistillConfig):
     student_short = _model_short_name(config.student_model)
 
     name = (
-        f"{config.distill_mode}_{config.language_code}"
+        f"{config.task}_{config.language_code}"
         f"_lr{config.learning_rate}_steps{config.max_steps}_ga{config.grad_accum_steps}"
     )
     group = f"distill_{teacher_short}__{config.language_code}"
@@ -62,7 +48,7 @@ def setup_wandb(config: DistillConfig):
     tags = [
         "distillation",
         config.language_code,
-        config.distill_mode,
+        config.task,
         teacher_short,
         student_short,
         f"lr={config.learning_rate}",
@@ -75,11 +61,11 @@ def setup_wandb(config: DistillConfig):
         tags.append(_sweep_tag)
 
     wandb.init(
-        project=os.environ.get("WANDB_PROJECT", "spec-decoding"),
+        project=os.environ.get("WANDB_PROJECT", "spec-decoding-distill"),
         entity=os.environ.get("WANDB_ENTITY", "lecs-general"),
         config=asdict(config),
         group=group,
-        job_type=f"distill-{config.distill_mode}",
+        job_type=f"distill-{config.task}",
         name=name,
         tags=tags,
     )
@@ -106,6 +92,21 @@ def _build_scheduler(optimizer, config: DistillConfig) -> LambdaLR:
     return LambdaLR(optimizer, lr_lambda)
 
 
+def compute_loss(student, batch, device) -> torch.Tensor:
+    input_ids = batch["input_ids"].to(device)
+    attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+    topk_logprobs = batch["topk_logprobs"].to(device, non_blocking=True)
+    topk_logprobs_idx = batch["topk_logprobs_indices"].to(device, non_blocking=True)
+    label_mask = batch["label_mask"].to(device, non_blocking=True)
+
+    with autocast(device_type=device.type, enabled=(device.type == "cuda")):
+        logits = student(input_ids=input_ids, attention_mask=attention_mask).logits
+        logprobs = torch.nn.functional.log_softmax(logits[..., :-1, :].contiguous(), dim=-1)
+        student_logprobs = logprobs.gather(dim=-1, index=topk_logprobs_idx)
+        loss = -(torch.exp(topk_logprobs) * student_logprobs).sum(-1)
+        loss = (loss * label_mask).sum() / label_mask.sum().clamp(min=1)
+    return loss
+
 @torch.no_grad()
 def _compute_eval_loss(student, eval_dataloader, device) -> float:
     """Run a forward pass over the eval split and return average loss."""
@@ -113,19 +114,7 @@ def _compute_eval_loss(student, eval_dataloader, device) -> float:
     total_loss = 0.0
     count = 0
     for batch in eval_dataloader:
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        labels = batch["labels"].to(device)
-
-        with autocast(device_type=device.type, enabled=(device.type == "cuda")):
-            logits = student(input_ids=input_ids, attention_mask=attention_mask).logits
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss = F.cross_entropy(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-                ignore_index=-100,
-            )
+        loss = compute_loss(student, batch, device)
         total_loss += loss.item()
         count += 1
     student.train()
@@ -164,47 +153,71 @@ def run_distillation(config: DistillConfig):
 
     device = next(student.parameters()).device
 
-    # Data — dispatch on distill_mode
-    logger.info(f"Distillation mode: {config.distill_mode}")
-    if config.distill_mode == "general":
-        raw_dataset = load_general_dataset(config)
-        dataset_len = len(raw_dataset)
-        tokenized = tokenize_general(raw_dataset, tokenizer, config)
-    else:
-        raw_dataset = load_seqkd_dataset(config)
-        dataset_len = len(raw_dataset)
-        tokenized = tokenize_seqkd(raw_dataset, tokenizer, config)
-
-    repo_name = build_repo_name(config, dataset_len)
+    assert config.dataset_path
+    dataset = datasets.Dataset.from_parquet(config.dataset_path)
+    assert isinstance(dataset, datasets.Dataset)
+    repo_name = build_repo_name(config, len(dataset))
     logger.info(f"HF repo: {repo_name}")
 
     # Train / eval split (randomized, seeded for reproducibility).
-    if config.eval_split_ratio > 0 and len(tokenized) > 1:
-        split = tokenized.train_test_split(
+    if config.eval_split_ratio > 0 and len(dataset) > 1:
+        split = dataset.train_test_split(
             test_size=config.eval_split_ratio, seed=42,
         )
         train_dataset = split["train"]
         eval_dataset = split["test"]
     else:
-        train_dataset = tokenized
-        eval_dataset = tokenized.select([])
+        train_dataset = dataset
+        eval_dataset = dataset.select([])
     logger.info(
         f"Split: {len(train_dataset)} train, {len(eval_dataset)} eval examples"
     )
+
+
+    def collate_fn(batch):
+        # Build input IDs and full logits
+        bs = len(batch)
+        seq_len = max([len(r["token_ids"]) for r in batch])
+        topk = len(batch[0]["logprobs"][0])
+
+        input_ids = torch.full((bs, seq_len), tokenizer.pad_token_id, dtype=torch.long)
+        attention_mask = torch.zeros((bs, seq_len), dtype=torch.long)
+        # Avoid materializing these as full vocab dim
+        # Note: shifted on seq dim (first item is logprobs for second token)
+        topk_logprobs = torch.zeros((bs, seq_len - 1, topk), dtype=student.dtype)
+        topk_logprobs_indices = torch.zeros((bs, seq_len - 1, topk), dtype=torch.long)
+        label_mask = torch.zeros((bs, seq_len - 1), dtype=student.dtype) # Mask positions that shouldn't be trained
+
+        for idx in range(bs):
+            item_seq_len = len(batch[idx]["token_ids"])
+            item_prompt_len = batch[idx]["prompt_length"]
+            input_ids[idx][0:item_seq_len] = torch.as_tensor(batch[idx]["token_ids"])
+            attention_mask[idx][0:item_seq_len] = 1
+            topk_logprobs[idx][item_prompt_len-1:item_seq_len-1] = torch.as_tensor(batch[idx]["logprobs"])
+            topk_logprobs_indices[idx][item_prompt_len-1:item_seq_len-1] = torch.as_tensor(batch[idx]["logprobs_vocab_idx"])
+            label_mask[idx][item_prompt_len-1:item_seq_len-1] = 1
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "label_mask": label_mask,
+            "topk_logprobs": topk_logprobs,
+            "topk_logprobs_indices": topk_logprobs_indices,
+        }
 
     dataloader = DataLoader(
         train_dataset,  # type: ignore[arg-type]
         batch_size=config.batch_size,
         shuffle=True,
-        num_workers=0,
         pin_memory=(device.type == "cuda"),
+        collate_fn=collate_fn,
     )
     eval_dataloader = DataLoader(
         eval_dataset,  # type: ignore[arg-type]
         batch_size=config.batch_size,
         shuffle=False,
-        num_workers=0,
         pin_memory=(device.type == "cuda"),
+        collate_fn=collate_fn,
     )
 
     # Optimizer with weight decay (exclude bias and LayerNorm)
@@ -244,20 +257,7 @@ def run_distillation(config: DistillConfig):
             if step >= target_step:
                 break
 
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].to(device)
-
-            with autocast(device_type=device.type, enabled=(device.type == "cuda")):
-                logits = student(input_ids=input_ids, attention_mask=attention_mask).logits
-                shift_logits = logits[..., :-1, :].contiguous()
-                shift_labels = labels[..., 1:].contiguous()
-                loss = F.cross_entropy(
-                    shift_logits.view(-1, shift_logits.size(-1)),
-                    shift_labels.view(-1),
-                    ignore_index=-100,
-                )
-
+            loss = compute_loss(student, batch, device)
             if torch.isnan(loss):
                 logger.warning(f"Step {step}, micro-batch NaN — skipping accumulation window")
                 optimizer.zero_grad()

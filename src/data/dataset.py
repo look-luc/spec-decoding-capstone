@@ -61,12 +61,6 @@ def get_raw_url(url: str) -> str:
         return url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
     return url
 
-def get_raw_url(url: str) -> str:
-    """Converts a GitHub blob URL to a raw content URL."""
-    if "github.com" in url and "/blob/" in url:
-        return url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
-    return url
-
 def assemble_dataset(language: str, type: Literal["mono", "bi"], include_aya:bool):
     file = "reference_table_monolingual.csv" if type=="mono" else "reference_table_bilingual.csv"
     file_path = DATA_DIR / file
