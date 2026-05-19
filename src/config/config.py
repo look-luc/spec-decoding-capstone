@@ -4,7 +4,7 @@ from typing import Literal
 
 @dataclass
 class ExperimentConfig:
-    task: Literal['translation']
+    task: Literal['translation', 'story_gen']
     language_code: str
 
     target_model: str
@@ -13,6 +13,10 @@ class ExperimentConfig:
     decoding_mode: Literal["greedy", "sample"]
     top_k: int = 0
     top_p: float = 0.0
+
+    repetition_penalty: float = 1.1
+    repetition_penalty_window: int = 16
+
     gamma: int = 5
     track_iterations: bool = False # If true, will log per-iteration of SD
 
