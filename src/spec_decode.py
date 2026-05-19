@@ -95,7 +95,7 @@ def speculative_decode(
     tokenizer,
     input_ids: torch.Tensor,
     mode: Literal["greedy", "sample"],
-    max_new_tokens: int = 256,
+    max_new_tokens: int = 128,
     gamma: int = 5,
     top_k: int = 0,
     top_p: float = 0.0,
@@ -190,7 +190,8 @@ def speculative_decode(
         ],
         dim=-1,
     )
-    cur_gen_idx = input_ids.size(1)
+    prompt_len = input_ids.size(-1)
+    cur_gen_idx = input_ids.size(-1)
 
     # Track average time for draft and verifier forward pass for speedup factor
     # Each accumulator: (sum_of_times, sum_of_squared_times, count)
@@ -226,6 +227,11 @@ def speculative_decode(
         # Metrics
         total_draft_tokens = 0
         total_matched_tokens = 0
+        # Per-position acceptance for the octiles (eg 16, 32, ..., 128 if we use max_tokens=128)
+        # These are offsets after the prompt length, not absolute indices
+        octile_offsets = [i * (max_new_tokens // 8) + 1 for i in range(8)]
+        per_position_accept_count = [0] * 8
+        per_position_draft_count = [0] * 8
         num_iterations = 0
         iteration_history = []
         start_time = get_time()
@@ -287,6 +293,17 @@ def speculative_decode(
                     break
             _ = draft_end and draft_end.record()
 
+            # Determine if we're drafting any of the octile positions (for logging)
+            octile_idxs_to_log = [
+                idx
+                for idx, pos in enumerate(octile_offsets)
+                if cur_gen_idx - prompt_len
+                <= pos
+                < cur_gen_idx + new_draft_tokens.size(-1) - prompt_len
+            ]
+            for idx in octile_idxs_to_log:
+                per_position_draft_count[idx] += 1
+
             #  Step 2: Target model verifies
             target_input_ids = torch.concat(
                 [generated_tokens[:, cur_gen_idx - 1 : cur_gen_idx], new_draft_tokens],
@@ -303,9 +320,22 @@ def speculative_decode(
             # Record times (CUDA only)
             if draft_start and draft_end and verifier_start and verifier_end:
                 torch.cuda.synchronize()
-                draft_times_acc = (draft_times_acc[0] + draft_start.elapsed_time(draft_end), draft_times_acc[1] + new_draft_tokens.size(-1))
-                verifier_times_acc = (verifier_times_acc[0] + verifier_start.elapsed_time(verifier_end), verifier_times_acc[1] + 1)
-
+                # Draft: we only measure total drafting time for the batch of n tokens.
+                # We treat each token as taking elapsed/n time (uniform split).
+                # sum_sq contribution = n * (elapsed/n)^2 = elapsed^2/n
+                draft_elapsed = draft_start.elapsed_time(draft_end)  # ms
+                n_drafted = new_draft_tokens.size(-1)
+                draft_times_acc = (
+                    draft_times_acc[0] + draft_elapsed,
+                    draft_times_acc[1] + (draft_elapsed**2 / n_drafted if n_drafted > 0 else 0),
+                    draft_times_acc[2] + n_drafted,
+                )
+                verifier_elapsed = verifier_start.elapsed_time(verifier_end)  # ms
+                verifier_times_acc = (
+                    verifier_times_acc[0] + verifier_elapsed,
+                    verifier_times_acc[1] + verifier_elapsed**2,
+                    verifier_times_acc[2] + 1,
+                )
             # Find the first collision, if any.
             #
             # Apply repetition penalty per-position BEFORE log_softmax so that
@@ -352,8 +382,12 @@ def speculative_decode(
             if rejected.any():
                 first_collision_idx = rejected.int().argmax(dim=-1).item()
                 assert isinstance(first_collision_idx, int)
+
                 total_matched_tokens += first_collision_idx
                 total_draft_tokens += first_collision_idx + 1
+                for idx in octile_idxs_to_log:
+                    if octile_offsets[idx] < cur_gen_idx + first_collision_idx - prompt_len:
+                        per_position_accept_count[idx] += 1
 
                 # Resample token from p_target(x) - p_draft(x)
                 resample_dist = (
@@ -374,6 +408,9 @@ def speculative_decode(
             else:
                 total_matched_tokens += new_draft_tokens.size(-1)
                 total_draft_tokens += new_draft_tokens.size(-1)
+                for idx in octile_idxs_to_log:
+                    per_position_accept_count[idx] += 1
+
                 if new_draft_tokens.size(-1) > 0 and torch.isin(new_draft_tokens[:, -1], stop_token_ids).any():
                     # If we've reached <eos>, don't add bonus token
                     tokens_to_add = new_draft_tokens
@@ -392,6 +429,8 @@ def speculative_decode(
                         )
                     else:
                         tokens_to_add = new_draft_tokens
+
+
 
             # Actually add the new tokens and update idxs
             new_gen_idx = cur_gen_idx + tokens_to_add.size(-1)
@@ -439,8 +478,9 @@ def speculative_decode(
         total_matched_tokens / total_draft_tokens if total_draft_tokens > 0 else 0.0
     )
     total_generated_tokens = cur_gen_idx - input_ids.size(1)
-
-
+    octile_position_acceptance = [
+        acc / draf if draf > 0 else None for acc, draf in zip(per_position_accept_count, per_position_draft_count)
+    ]
 
     metrics = {
         "time": total_time,
@@ -448,6 +488,8 @@ def speculative_decode(
         "draft_tokens": total_draft_tokens,
         "matched_tokens": total_matched_tokens,
         "acceptance_rate": acceptance_rate,
+        "octile_position_acceptance": octile_position_acceptance,
+        "octile_positions": octile_offsets,
         "num_iterations": num_iterations,
         "toks_per_sec": total_generated_tokens / total_time if total_time > 0 else 0,
     }
