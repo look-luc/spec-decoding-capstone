@@ -11,6 +11,8 @@
 #SBATCH --qos=blanca-clearlab1
 #SBATCH --mail-type=END,FAIL
 
+# Runs eval with the distilled general domain models
+
 export HF_HOME="/scratch/alpine/$USER/.cache/huggingface"
 mkdir -p $HF_HOME
 export WANDB_DIR="/scratch/alpine/$USER/wandb"
@@ -44,7 +46,8 @@ GAMMAS="2 3 4"
             uv run python run.py "$1" \
                 -o language_code=$lang \
                 gamma=$gamma \
-                wandb_tag=final
+                wandb_tag=final \
+                draft_model="lecslab/$lang-general-Qwen3.5-9B-Qwen3.5-0.8B"
         done
     done
 # done
