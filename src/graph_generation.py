@@ -89,6 +89,14 @@ def load_real_data() -> pd.DataFrame:
     return df
 
 
+def _log_stats(data: pd.DataFrame, group: str, y: str, label: str):
+    logger.info(f"Stats for {label} ({y}):")
+    for group_value, sub in data.groupby(group):
+        logger.info(
+            f"  {group_value}: avg={sub[y].mean():.4f}, min={sub[y].min():.4f}, max={sub[y].max():.4f}"
+        )
+
+
 def _style_spines(ax):
     for spine in ax.spines.values():
         spine.set_visible(True)
@@ -105,6 +113,7 @@ def _finalize(fig, filename: str):
 
 
 def _bar_plot(data: pd.DataFrame, y: str, y_std: str, filename: str):
+    _log_stats(data, "setting", y, filename)
     fig, ax = plt.subplots(figsize=(8, 2))
     sns.barplot(
         data=data,
@@ -159,13 +168,14 @@ def _bar_plot(data: pd.DataFrame, y: str, y_std: str, filename: str):
 
 
 def _violin_plot(data, x: str, y: str, y_std: str):
+    _log_stats(data, x, y, y)
     order = [m for m in FORWARD_PASS_MODELS if m in set(data['model_size'])]
-    fig, ax = plt.subplots(figsize=(4, 3))
+    fig, ax = plt.subplots(figsize=(4, 2.5))
 
     sns.violinplot(
         data=data,
-        x=x,
-        y=y,
+        x=y,
+        y=x,
         order=order,
         hue=x,
         hue_order=order,
@@ -175,16 +185,14 @@ def _violin_plot(data, x: str, y: str, y_std: str):
         linewidth=0.6,
         width=0.95,
         cut=0,
+        orient="h",
         ax=ax,
     )
-    ax.set_ylim(bottom=0)
+    ax.set_xlim(left=0)
 
     _style_spines(ax)
-    ax.set_xlabel("")
-    ax.set_ylabel(KEY_TO_TITLE[y])
-    ax.tick_params(axis='x', labelsize=10, rotation=30)
-    for label in ax.get_xticklabels():
-        label.set_ha('right')
+    ax.set_ylabel("")
+    ax.set_xlabel(KEY_TO_TITLE[y])
 
     _finalize(fig, y)
 
@@ -214,7 +222,8 @@ def load_distill_data() -> pd.DataFrame:
 
 
 def _chrf_acceptance_plot(data: pd.DataFrame):
-    fig, ax = plt.subplots(figsize=(8, 4))
+    _log_stats(data, "setting", "sentence_avg_acceptance_rate", "chrf_acceptance")
+    fig, ax = plt.subplots(figsize=(8, 3))
     data = data.copy()
     baseline_chrf_by_lang = (
         data[data['setting'] == 'Baseline'].set_index('language')['chrf2']
@@ -226,18 +235,26 @@ def _chrf_acceptance_plot(data: pd.DataFrame):
 
     for x in baseline_chrfs['chrf2']:
         ax.axvline(x, linestyle='--', color='#BFBFBF', linewidth=0.6, alpha=0.7, zorder=0)
-    settings = [s for s in SETTINGS if s in set(data['setting'])]
-    for idx, setting in enumerate(settings):
-        setting_data = data[data['setting'] == setting]
-        ax.plot(
-            setting_data['chrf2'], setting_data['sentence_avg_acceptance_rate'],
-            marker='o',
-            markersize=5,
-            color=PALETTE[idx],
-            label=setting,
-            linewidth=1.5,
-            linestyle='--',
-        )
+
+    r = baseline_chrfs['chrf2'].corr(baseline_chrfs['sentence_avg_acceptance_rate'])
+    logger.info(f"Pearson r (chrF++ vs acceptance rate) for Baseline: r={r:.4f} (n={len(baseline_chrfs)})")
+
+    ax.plot(
+        baseline_chrfs['chrf2'], baseline_chrfs['sentence_avg_acceptance_rate'],
+        marker='o',
+        markersize=5,
+        color=PALETTE[0],
+        linewidth=0,
+    )
+    slope, intercept = np.polyfit(baseline_chrfs['chrf2'], baseline_chrfs['sentence_avg_acceptance_rate'], 1)
+    x_fit = np.array([baseline_chrfs['chrf2'].min(), baseline_chrfs['chrf2'].max()])
+    ax.plot(x_fit, slope * x_fit + intercept, color=PALETTE[0], linewidth=1.5, linestyle='--')
+    ax.text(
+        0.98, 0.02, f"r = {r:.3f}",
+        transform=ax.transAxes,
+        ha='right', va='bottom',
+        fontsize=10, fontweight='bold',
+    )
 
     _style_spines(ax)
     ax.set_xlabel("chrF++")
@@ -262,19 +279,6 @@ def _chrf_acceptance_plot(data: pd.DataFrame):
             row += 1
         txt.set_y(base_y + row * row_spacing)
         placed.append((x_left, x_right, row))
-    max_row = max((r for _, _, r in placed), default=0)
-    legend_y = base_y + (max_row + 1) * row_spacing + 0.02
-
-    ax.legend(
-        frameon=False,
-        fontsize=10,
-        loc='lower center',
-        bbox_to_anchor=(0.5, legend_y),
-        ncol=len(settings),
-        title=None,
-        borderaxespad=0.1,
-    )
-
     _finalize(fig, "chrf_acceptance")
 
 def create_graphs(data: pd.DataFrame):
@@ -385,5 +389,6 @@ def _pinsker_plot(kl_df: pd.DataFrame, spec_df: pd.DataFrame):
 if __name__ == "__main__":
     kl_data = pd.read_csv("viz/kl_results.csv")
     spec_data = load_real_data()
+    spec_data = spec_data[spec_data['language'] != 'zh']
     _pinsker_plot(kl_data, spec_data)
     create_graphs(spec_data)
