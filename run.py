@@ -1,3 +1,7 @@
+'''
+File to run experiment
+'''
+
 import argparse
 import json
 import logging
@@ -10,12 +14,22 @@ from typing import Mapping
 import wandb
 from tqdm import tqdm
 
-from src.config.config import WANDB_ENTITY, ExperimentConfig
-from src.config.config_to_dataclass import config_to_dataclass
-from src.data.create_inputs import create_inputs, create_prompt
-from src.data.dataset import assemble_dataset
-from src.generation import generate_output
-from src.n_gram import NGramModel
+'''
+Imports from within src folder
+'''
+from src.config.config import WANDB_ENTITY, ExperimentConfig  # config functions and key
+from src.config.config_to_dataclass import (
+    config_to_dataclass,  #to dataclass config file
+)
+from src.data.create_inputs import (  # functions to create the prompts and inputs for draft models
+    create_inputs,
+    create_prompt,
+)
+from src.data.dataset import (
+    assemble_dataset,  #function to get all the datasets inplace and into one set
+)
+from src.generation import generate_output  # getting function that generates outputs
+from src.n_gram import NGramModel  #NGram model load
 from src.spec_dec_metrics import log_token_flow, summarize_metrics
 from src.utils import load_model
 
