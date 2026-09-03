@@ -12,7 +12,7 @@ class ExperimentConfig:
 
     target_model: str
     draft_model: str | None
-    draft_model_type: Literal["none", "neural", "ngram"]
+    draft_model_type: Literal["none", "neural", "ngram", "medusa", "multitoken"]
     decoding_mode: Literal["greedy", "sample"]
     top_k: int = 0
     top_p: float = 0.0
@@ -47,7 +47,7 @@ class ExperimentConfig:
 
         if isinstance(self.story_seed, str):
             self.story_seed = None if self.story_seed == "None" else int(self.story_seed)
-            
+
 @dataclass
 class DistillConfig:
     task: Literal['general', 'translation']
