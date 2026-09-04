@@ -23,7 +23,7 @@ class madusa(nn.module):
         except Exception as e:
             print(f"error raised: {e}")
 
-        hidden_size = self.base_model.config.hidden_sie
+        hidden_size = self.base_model.config.hidden_size
         vocab_size = self.base_model.config.vocab_size
 
         self.heads = nn.ModuleList(
@@ -32,6 +32,18 @@ class madusa(nn.module):
                 for _ in range(num_heads)
             ]
         )
+
+    @property
+    def config(self):
+        return self.base_model.config
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
 
     def forward(self, input_ids, attention_mask=None, past_key_values=None):
         outputs = self.base_model(
