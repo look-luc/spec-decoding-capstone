@@ -14,7 +14,6 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from src.config.config import WANDB_ENTITY, MadusaConfig
-from src.models.madusa import madusa
 from src.utils import load_model
 
 logger = logging.getLogger(__name__)
@@ -89,11 +88,23 @@ def compute_loss(madusa_model, batch, device) -> torch.Tensor:
             input_ids=input_ids,
             attention_mask=attention_mask
         )
-        logprobs = torch.nn.functional.log_softmax(logits[..., :-1, :].contiguous(), dim=-1)
-        student_logprobs = logprobs.gather(dim=-1, index=topk_logprobs_idx)
-        loss = -(torch.exp(topk_logprobs) * student_logprobs).sum(-1)
-        loss = (loss * label_mask).sum() / label_mask.sum().clamp(min=1)
-    return loss
+        total_loss = 0.0
+        for k in range(len(medusa_logits)):
+            logprobs = torch.nn.functional.log_softmax(
+                medusa_logits[:, :-(k+1), :].contiguous(),
+                dim=-1
+            )
+            target_logprobs = batch["topk_logprobs"][:, (k+1):, :]
+            target_indices = batch["topk_logprobs"][:, (k + 1):, :]
+            mask = batch["label_mask"][:, (k + 1):, :]
+
+            model_logprobs = logprobs.gather(dim=-1, index=target_indices)
+
+            head_loss = -(torch.exp(target_logprobs) * model_logprobs).sum(-1)
+            weighted_loss = (head_loss*mask).sum() / max(mask.sum(), 1)
+
+            total_loss += weighted_loss
+    return total_loss / len(medusa_logits)
 
 @torch.no_grad()
 def _compute_eval_loss(student, eval_dataloader, device) -> float:

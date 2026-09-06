@@ -88,35 +88,79 @@ def get_kv_cache_length(past_key_values) -> int:
             return past_key_values[0][0].size(-1)
     return 0
 
+def default_tree(preset_type):
+    if preset_type.lower() not in ["lightweight", "gready_linear", "standard"]:
+        raise ValueError("Must be one of the following options: ['lightweight', 'gready_linear', 'standard']")
+    if preset_type.lower() == "lightweight":
+        """
+        16-node tree focused on high-probability top-1/top-2 branches
+        Reduces significantly matrix multiplication sizes and tree-attention mask generation overhead during the verification step.
+        Ideal for memory-constrained devices or edge deployment.
+        """
+        return [
+            [0], [0, 0], [0, 0, 0], [0, 0, 0, 0],
+            [1], [0, 1], [1, 0], [0, 0, 1],
+            [2], [0, 2], [2, 0], [0, 1, 0],
+            [3], [0, 0, 2], [1, 1], [0, 0, 0, 1]
+        ]
+    elif preset_type.lower() == "gready_linear":
+        """
+        Minimal single-path execution without branching
+        Simplest memory footprint; eliminates complex 2D branching logic and minimizes KV
+        cache slicing operations.
+        """
+        return [
+            [0],
+            [0, 0],
+            [0, 0, 0],
+            [0, 0, 0, 0]
+        ]
+    elif preset_type.lower() == "standard":
+        """
+        Standard 64-Node Tree
+        Maximizes the expected token acceptance per iteration rate; explores a diverse range
+        of branches across up to 4 Medusa heads.
+        """
+        return[
+            [0, 0], [0, 1], [0, 2], [0, 3], [1, 0], [2, 0], [3, 0], [4, 0],
+            [0, 4], [0, 5], [1, 1], [1, 2], [1, 3], [2, 1], [2, 2], [3, 1],
+            [0, 6], [0, 7], [1, 4], [1, 5], [2, 3], [2, 4], [3, 2], [3, 3],
+            [4, 1], [5, 0], [0, 8], [0, 9], [1, 6], [2, 5], [3, 4], [4, 2],
+            [0, 10], [0, 11], [1, 7], [2, 6], [3, 5], [4, 3], [5, 1], [6, 0],
+            [0, 12], [0, 13], [1, 8], [2, 7], [3, 6], [4, 4], [5, 2], [6, 1],
+            [0, 14], [0, 15], [1, 9], [2, 8], [3, 7], [4, 5], [5, 3], [6, 2],
+            [7, 0], [0, 16], [1, 10], [2, 9], [3, 8], [4, 6], [5, 4], [7, 1]
+        ]
 
 def speculative_decode(
     target_model,
-    draft_model,
+    medusa_heads:int,
     tokenizer,
-    input_ids: torch.Tensor,
-    mode: Literal["greedy", "sample"],
-    max_new_tokens: int = 128,
-    gamma: int = 5,
-    top_k: int = 0,
-    top_p: float = 0.0,
-    repetition_penalty: float = 1.1,
-    repetition_penalty_window: int = 16,
-    eos_token_id: int | None = None,
+    input_ids,
+    mode:Literal["greedy", "sample"],
+    max_new_tokens=128,
+    tree_choices:str="Standard",
+    top_k=0,
+    top_p=0.0,
+    repetition_penalty=1.1,
+    repetition_penalty_window=16,
+    eos_token_id=None,
     device=None,
-    track_iterations: bool = False,
+    track_iterations=False
 ):
     """
-    Speculative Decoding with KV Caching.
+    Medusa Speculative Decoding with KV Caching.
     Key features:
 
     Args:
         target_model: The large target model
-        draft_model: The smaller draft model
-        tokenizer: Shared tokenizer (must be same for both models)
+        medusa_heads: The amount of heads for trees
+        tokenizer: tokenizer from taraget model
+        input_ids: Input token IDs [1, seq_len]
         input_ids: Input token IDs [1, seq_len]
         mode: 'greedy' | 'sample'
         max_new_tokens: Maximum new tokens to generate
-        gamma: Number of draft tokens to generate per iteration
+        tree_choices: What approach of tree standard used
         top_k: If > 0, only sample from the top k tokens
         top_p: If > 0 and < 1, keep the smallest set of tokens whose cumulative prob >= p
         eos_token_id: End of sequence token ID
@@ -213,6 +257,7 @@ def speculative_decode(
         # Preload kv cache for prompts
         target_out = target_model(input_ids, use_cache=True)
         target_kv_cache = target_out.past_key_values
+        last_hidden = target_out.past_key_values
         draft_kv_cache = draft_model(input_ids, use_cache=True).past_key_values
 
         # Add the first new token.
@@ -238,6 +283,7 @@ def speculative_decode(
 
         while cur_gen_idx < generated_tokens.size(-1):
             num_iterations += 1
+            head_logits = madusa_heads.last_hidden
             # Step 1: Draft tokens
             # B * gamma (unless gamma > remaining tokens)
             max_draft_tokens = min(gamma, generated_tokens.size(-1) - cur_gen_idx)
@@ -601,8 +647,16 @@ def apply_repetition_penalty(
         # window_counts = torch.nn.functional.one_hot(context_ids[b]).sum(dim=-2)
         max_vocab_index = torch.max(context_ids[b]).item() + 1
         max_vocab_index = cast(int, max_vocab_index)
-        window_counts = torch.zeros(max_vocab_index, dtype=torch.long, device=context_ids[b].device)
-        window_counts.scatter_add_(dim=0, index=context_ids[b], src=torch.ones_like(context_ids[b]))
+        window_counts = torch.zeros(
+            max_vocab_index,
+            dtype=torch.long,
+            device=context_ids[b].device
+        )
+        window_counts.scatter_add_(
+            dim=0,
+            index=context_ids[b],
+            src=torch.ones_like(context_ids[b])
+        )
 
         per_token_penalty = penalty ** window_counts
         logits[b,:max_vocab_index] = torch.where(
@@ -635,7 +689,13 @@ def apply_repetition_penalty_batched(
         mask = ~torch.triu(torch.ones(seq_len + 1, seq_len, dtype=torch.bool, device=device))
 
         # Only positions after the start of the window
-        window_start = torch.clamp(torch.arange(seq_len + 1, device=device) - window, 0).unsqueeze(-1)
+        window_start = torch.clamp(
+            torch.arange(
+                seq_len + 1,
+                device=device
+            ) - window,
+            min=0
+        ).unsqueeze(-1)
         start_mask = torch.arange(seq_len, device=device) >= window_start
         mask *= start_mask
 

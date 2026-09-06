@@ -1,18 +1,17 @@
-import
 import torch
 import torch.nn as nn
 
 
-class medusa_heads(nn.module):
+class medusa_heads(nn.Module):
     def __init__(self, in_features, out_features) -> None:
         super().__init__()
 
-        self.linear = nn.linear(in_features, out_features, bias=False)
+        self.linear = nn.Linear(in_features, out_features, bias=False)
 
     def forward(self, hidden_state):
         return self.linear(hidden_state)
 
-class madusa(nn.module):
+class madusa(nn.Module):
     def __init__(self, base_model, num_heads=4) -> None:
         super().__init__()
         self.base_model = base_model
@@ -51,7 +50,6 @@ class madusa(nn.module):
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             output_hidden_states=True,
-            use_cache=True
         )
 
         last_hidden = outputs.hidden_states[-1]
