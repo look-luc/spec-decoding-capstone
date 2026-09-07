@@ -381,6 +381,25 @@ def speculative_decode(
                 top_p=top_p,
                 mode=mode
             )
+            draft_tree_tokens = tree_data["tokens"]
+            tree_atten_mask = tree_data["attention"]
+            tree_pos_id = tree_data["pos_idx"]
+            tree_paths = tree_data["paths"]
+            tree_nodes = tree_data["nodes"]
+
+            total_draft_tokens += draft_tree_tokens.size(-1)
+
+            # Step 2: Target Model Parallel Verification Pass over Candidate Tree
+            target_out = target_model(
+                input_ids=draft_tree_tokens,
+                past_kv_values=target_kv_cache,
+                attention_mask=tree_atten_mask,
+                position_ids=tree_pos_id,
+                use_cache=True,
+                output_hidden_states=True
+            )
+            verify_logits = target_out.logits
+
 
 def filter_logprobs(
     logprobs: torch.Tensor, top_k: int = 0, top_p: float = 0.0
