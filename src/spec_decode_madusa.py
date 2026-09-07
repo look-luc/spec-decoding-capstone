@@ -11,6 +11,9 @@ import time
 from typing import Literal, cast
 
 import torch
+import torch.nn as nn
+
+from src.models.madusa import medusa_heads
 
 
 def get_stop_token_ids(tokenizer, eos_token_id=None):
@@ -88,9 +91,9 @@ def get_kv_cache_length(past_key_values) -> int:
             return past_key_values[0][0].size(-1)
     return 0
 
-def default_tree(preset_type):
-    if preset_type.lower() not in ["lightweight", "gready_linear", "standard"]:
-        raise ValueError("Must be one of the following options: ['lightweight', 'gready_linear', 'standard']")
+def default_tree(preset_type:str):
+    if preset_type.lower() not in ["lightweight", "greedy_linear", "standard"]:
+        raise ValueError("Must be one of the following options: ['lightweight', 'greedy_linear', 'standard']")
     if preset_type.lower() == "lightweight":
         """
         16-node tree focused on high-probability top-1/top-2 branches
@@ -103,7 +106,7 @@ def default_tree(preset_type):
             [2], [0, 2], [2, 0], [0, 1, 0],
             [3], [0, 0, 2], [1, 1], [0, 0, 0, 1]
         ]
-    elif preset_type.lower() == "gready_linear":
+    elif preset_type.lower() == "greedy_linear":
         """
         Minimal single-path execution without branching
         Simplest memory footprint; eliminates complex 2D branching logic and minimizes KV
@@ -122,24 +125,102 @@ def default_tree(preset_type):
         of branches across up to 4 Medusa heads.
         """
         return[
-            [0, 0], [0, 1], [0, 2], [0, 3], [1, 0], [2, 0], [3, 0], [4, 0],
-            [0, 4], [0, 5], [1, 1], [1, 2], [1, 3], [2, 1], [2, 2], [3, 1],
-            [0, 6], [0, 7], [1, 4], [1, 5], [2, 3], [2, 4], [3, 2], [3, 3],
-            [4, 1], [5, 0], [0, 8], [0, 9], [1, 6], [2, 5], [3, 4], [4, 2],
-            [0, 10], [0, 11], [1, 7], [2, 6], [3, 5], [4, 3], [5, 1], [6, 0],
-            [0, 12], [0, 13], [1, 8], [2, 7], [3, 6], [4, 4], [5, 2], [6, 1],
-            [0, 14], [0, 15], [1, 9], [2, 8], [3, 7], [4, 5], [5, 3], [6, 2],
-            [7, 0], [0, 16], [1, 10], [2, 9], [3, 8], [4, 6], [5, 4], [7, 1]
+            [0], [0, 0], [1], [0, 1], [2], [0, 0, 0], [1, 0], [0, 2], [3], [0, 3],
+            [4], [0, 4], [2, 0], [0, 5], [0, 0, 1], [5], [0, 6], [6], [0, 7], [0, 1, 0],
+            [1, 1], [7], [0, 8], [0, 0, 2], [3, 0], [0, 9], [8], [9], [1, 0, 0], [0, 2, 0],
+            [1, 2], [0, 0, 3], [4, 0], [2, 1], [0, 0, 4], [0, 0, 5], [0, 0, 0, 0], [0, 1, 1],
+            [0, 0, 6], [0, 3, 0], [5, 0], [1, 3], [0, 0, 7], [0, 0, 8], [0, 0, 9], [6, 0],
+            [0, 4, 0], [1, 4], [7, 0], [0, 1, 2], [2, 0, 0], [3, 1], [2, 2], [8, 0],
+            [0, 5, 0], [1, 5], [1, 0, 1], [0, 2, 1], [9, 0], [0, 6, 0], [0, 0, 0, 1], [1, 6],
+            [0, 7, 0]
         ]
+
+def build_tree(
+    logits,
+    tree_choice,
+    cur_gen_idx,
+    past_kv_len,
+    top_k,
+    top_p,
+    mode
+):
+    num_heads = logits.size(dim=1)
+    top_token_per_head = []
+    for i in range(num_heads):
+        max_rank = max(tree_choice[i])
+        head_logits = logits[0,i,:]
+        filter_logits = filter_logprobs(
+            nn.LogSoftmax(head_logits, dim=1),
+            top_k=top_k,
+            top_p=top_p
+        )
+        top_ids = torch.topk(logits[0, i], k=max_rank + 1).indices
+        top_token_per_head.append(top_ids)
+
+    nodes = []
+    node_dict = {}
+    paths = []
+
+    for path in tree_choice:
+        node_path = []
+        for depth in range(len(path)):
+            rank = path[depth]
+            token_id = top_token_per_head[depth][rank]
+            prefix = (depth, rank, token_id)
+
+            if prefix not in node_dict:
+                new_node_idx = len(nodes)
+                node_dict[prefix] = new_node_idx
+
+                parent_prefix = prefix[:-1]
+                parent_idx = node_dict[parent_prefix] if len(parent_prefix)>0 else None
+
+                nodes.append(
+                    {
+                        "node_idx": new_node_idx,
+                        "token_id": token_id,
+                        "depth": depth,
+                        "parent_idx": parent_idx
+                    }
+                )
+                node_path.append(node_dict[parent_prefix])
+    size = len(nodes)
+
+    draft_tree_tokens = torch.zeros(1, size)
+    pos_idx = torch.zeros(1, size)
+
+    for idx in range(size):
+        draft_tree_tokens[0,idx] = nodes[idx]["token_id"]
+        pos_idx[0, idx] = cur_gen_idx + nodes[idx]["depth"]
+
+    attn_mask = torch.full(
+        size=(size, past_kv_len + size),
+        fill_value=-float('inf')
+    )
+    attn_mask[:, :, :, :past_kv_len] = 0.0
+
+    for i in range(size):
+        cur_node = nodes[i]
+        while cur_node is not None:
+            attn_mask[0, 0, i, past_kv_len+cur_node["node_idx"]] = 0.0
+            cur_node = nodes[cur_node["parent_idx"]] if cur_node["parent_idx"] is not None else None
+
+    return {
+        "tokens": draft_tree_tokens,
+        "attention": attn_mask,
+        "pos_idx": pos_idx,
+        "paths": paths,
+        "nodes": nodes
+    }
 
 def speculative_decode(
     target_model,
-    medusa_heads:int,
     tokenizer,
     input_ids,
     mode:Literal["greedy", "sample"],
+    medusa_heads:nn.Module=medusa_heads,
     max_new_tokens=128,
-    tree_choices:str="Standard",
+    tree_choices:str|list[list]="Standard",
     top_k=0,
     top_p=0.0,
     repetition_penalty=1.1,
@@ -175,6 +256,9 @@ def speculative_decode(
 
     if device is None:
         device = next(target_model.parameters()).device
+
+    if isinstance(tree_choices, str):
+        tree_choices = default_tree(tree_choices)
 
     def apply_filters(logprobs: torch.Tensor) -> torch.Tensor:
         return filter_logprobs(logprobs, top_k=top_k, top_p=top_p)
@@ -222,14 +306,14 @@ def speculative_decode(
 
     # This is okay because if we've gotten this far, we know the actual tokenizers are the same length.
     # Just be aware that logits may have a slightly shorter dimension
-    d_vocab = max(draft_model.config.vocab_size, target_model.config.vocab_size)
+    d_vocab = max(medusa_heads.vocab_size, target_model.config.vocab_size)
 
     # B,S+max_new
     generated_tokens = torch.concat(
         [
             input_ids,
             torch.zeros(
-                input_ids.size(0), max_new_tokens, device=device, dtype=torch.int64
+                bs, max_new_tokens, device=device, dtype=torch.int64
             ),
         ],
         dim=-1,
@@ -239,7 +323,7 @@ def speculative_decode(
 
     # Track average time for draft and verifier forward pass for speedup factor
     # Each accumulator: (sum_of_times, sum_of_squared_times, count)
-    draft_start,draft_end,verifier_start, verifier_end   = None, None, None, None
+    draft_start,draft_end,verifier_start, verifier_end = None, None, None, None
     draft_times_acc = (0., 0., 0)
     verifier_times_acc = (0., 0., 0)
     if device.type == 'cuda':
@@ -255,19 +339,20 @@ def speculative_decode(
 
     with torch.no_grad():
         # Preload kv cache for prompts
-        target_out = target_model(input_ids, use_cache=True)
+        target_out = target_model(input_ids, use_cache=True, output_hidden_states=True)
         target_kv_cache = target_out.past_key_values
-        last_hidden = target_out.past_key_values
-        draft_kv_cache = draft_model(input_ids, use_cache=True).past_key_values
+        last_hidden = target_out.hidden_states[-1][:,-1:, :] #shape [bs, 1, hidden_dim]
 
         # Add the first new token.
         # Penalty context: the last W tokens of the prompt (no generated tokens yet).
         first_logits = penalize_logits(target_out.logits[:, -1, :], confirmed_len=cur_gen_idx)
-        last_target_token = select_index(
+        first_target_token = select_index(
             apply_filters(torch.log_softmax(first_logits, dim=-1))
         )
-        generated_tokens[:, cur_gen_idx] = last_target_token
+        generated_tokens[:, cur_gen_idx] = first_target_token
         cur_gen_idx += 1
+
+        prev_target_logits = first_logits
 
         # Metrics
         total_draft_tokens = 0
@@ -283,286 +368,19 @@ def speculative_decode(
 
         while cur_gen_idx < generated_tokens.size(-1):
             num_iterations += 1
-            head_logits = madusa_heads.last_hidden
-            # Step 1: Draft tokens
-            # B * gamma (unless gamma > remaining tokens)
-            max_draft_tokens = min(gamma, generated_tokens.size(-1) - cur_gen_idx)
-            new_draft_tokens = torch.zeros(
-                (bs, max_draft_tokens),
-                device=input_ids.device,
-                dtype=torch.int64,
+            past_kv_len = get_kv_cache_length(target_kv_cache)
+            medusa_logits = medusa_heads(last_hidden)
+
+            # Step 1: parallel draft candidate tree generation via the medusa heads
+            tree_data = build_tree(
+                logits=medusa_logits,
+                cur_gen_idx=cur_gen_idx,
+                tree_choice=tree_choices,
+                past_kv_len=past_kv_len,
+                top_k=top_k,
+                top_p=top_p,
+                mode=mode
             )
-            new_draft_token_logprobs = torch.full(
-                (bs, max_draft_tokens, d_vocab),
-                fill_value=float("-inf"),
-                device=input_ids.device,
-            )
-
-            # Determine how many tokens the draft model is missing from its cache
-            cache_len = get_kv_cache_length(draft_kv_cache)
-            expected_len = cur_gen_idx - 1
-            if cache_len < expected_len:
-                draft_input_ids = generated_tokens[:, cache_len:cur_gen_idx]
-            else:
-                draft_input_ids = generated_tokens[:, cur_gen_idx - 1 : cur_gen_idx]
-
-            _ = draft_start and draft_start.record()
-            for idx in range(new_draft_tokens.size(-1)):
-                draft_out = draft_model(
-                    input_ids=draft_input_ids,
-                    past_key_values=draft_kv_cache,
-                    use_cache=True,
-                )
-                draft_kv_cache = draft_out.past_key_values
-                # Penalty context: confirmed tokens + draft tokens produced so far
-                # (new_draft_tokens[:, :idx] holds the idx tokens drafted this iteration).
-                draft_out_logprobs = apply_filters(
-                    torch.log_softmax(
-                        penalize_logits(
-                            draft_out.logits[:, -1, :],
-                            confirmed_len=cur_gen_idx,
-                            draft_so_far=new_draft_tokens[:, :idx],
-                        ),
-                        dim=-1,
-                    )
-                )
-                next_draft_token = select_index(draft_out_logprobs)  # (bs,)
-                new_draft_tokens[:, idx] = next_draft_token
-                new_draft_token_logprobs[:, idx, : draft_out_logprobs.shape[-1]] = (
-                    draft_out_logprobs
-                )
-                draft_input_ids = next_draft_token.unsqueeze(-1)
-                if torch.isin(next_draft_token, stop_token_ids).any():
-                    # Trim draft tokens tensor since it's shorter than usual
-                    new_draft_tokens = new_draft_tokens[:, : idx + 1]
-                    new_draft_token_logprobs = new_draft_token_logprobs[:, : idx + 1, :]
-                    break
-            _ = draft_end and draft_end.record()
-
-            # Determine if we're drafting any of the octile positions (for logging)
-            octile_idxs_to_log = [
-                idx
-                for idx, pos in enumerate(octile_offsets)
-                if cur_gen_idx - prompt_len
-                <= pos
-                < cur_gen_idx + new_draft_tokens.size(-1) - prompt_len
-            ]
-
-
-            #  Step 2: Target model verifies
-            target_input_ids = torch.concat(
-                [generated_tokens[:, cur_gen_idx - 1 : cur_gen_idx], new_draft_tokens],
-                dim=-1,
-            )
-            _ = verifier_start and verifier_start.record()
-            target_out = target_model(
-                input_ids=target_input_ids,
-                past_key_values=target_kv_cache,
-                use_cache=True,
-            )
-            _ = verifier_end and verifier_end.record()
-
-            # Record times (CUDA only)
-            if draft_start and draft_end and verifier_start and verifier_end:
-                torch.cuda.synchronize()
-                # Draft: we only measure total drafting time for the batch of n tokens.
-                # We treat each token as taking elapsed/n time (uniform split).
-                # sum_sq contribution = n * (elapsed/n)^2 = elapsed^2/n
-                draft_elapsed = draft_start.elapsed_time(draft_end)  # ms
-                n_drafted = new_draft_tokens.size(-1)
-                draft_times_acc = (
-                    draft_times_acc[0] + draft_elapsed,
-                    draft_times_acc[1] + (draft_elapsed**2 / n_drafted if n_drafted > 0 else 0),
-                    draft_times_acc[2] + n_drafted,
-                )
-                verifier_elapsed = verifier_start.elapsed_time(verifier_end)  # ms
-                verifier_times_acc = (
-                    verifier_times_acc[0] + verifier_elapsed,
-                    verifier_times_acc[1] + verifier_elapsed**2,
-                    verifier_times_acc[2] + 1,
-                )
-            # Find the first collision, if any.
-            #
-            # Apply repetition penalty per-position BEFORE log_softmax so that
-            # the target distribution matches what the draft model saw at each step.
-            # Position j verifies draft token j, so its penalty context is:
-            #   confirmed tokens + new_draft_tokens[:, :j]  (same as draft step j).
-            # Position `n_draft` (the bonus token) uses all draft tokens as context.
-            #
-            # We must use the raw logits here, not the post-softmax values, because
-            # apply_repetition_penalty relies on logit sign to decide divide vs multiply.
-            target_raw_logits = target_out.logits  # (bs, n_draft+1, d_vocab)
-            penalized_target_logits = apply_repetition_penalty_batched(
-                logits=target_raw_logits,
-                generated_tokens=torch.cat(
-                    [generated_tokens[:, :cur_gen_idx], new_draft_tokens], dim=-1
-                ),
-                confirmed_len=cur_gen_idx,
-                penalty=repetition_penalty,
-                window=repetition_penalty_window,
-            )
-            target_out_logprobs = apply_filters(
-                torch.log_softmax(penalized_target_logits, dim=-1)
-            )  # (bs, n_draft+1, d_vocab)
-            target_out_chosen_logprobs = (
-                target_out_logprobs[:, :-1, :]
-                .gather(-1, new_draft_tokens.unsqueeze(-1))
-                .squeeze(-1)
-            )  # (bs, n_draft)
-            draft_out_chosen_logprobs = new_draft_token_logprobs.gather(
-                -1, new_draft_tokens.unsqueeze(-1)
-            ).squeeze(-1)  # (bs, n_draft)
-
-            # First, check if p_draft(t) <= p_target(t)
-            lower_draft_prob = draft_out_chosen_logprobs <= target_out_chosen_logprobs
-
-            # If this fails, we still accept a token with p = p_target(t) / p_draft(t)
-            random_accept = target_out_chosen_logprobs - draft_out_chosen_logprobs
-            random_accept = (
-                torch.log(torch.rand_like(target_out_chosen_logprobs)) < random_accept
-            )
-
-            # Figure out the first rejected token
-            rejected = ~(lower_draft_prob | random_accept)
-            if rejected.any():
-                first_collision_idx = rejected.int().argmax(dim=-1).item()
-                assert isinstance(first_collision_idx, int)
-
-                total_matched_tokens += first_collision_idx
-                total_draft_tokens += first_collision_idx + 1
-                for idx in octile_idxs_to_log:
-                    if octile_offsets[idx] < cur_gen_idx + first_collision_idx - prompt_len:
-                        per_position_accept_count[idx] += 1
-                    if octile_offsets[idx] <= cur_gen_idx + first_collision_idx - prompt_len:
-                        per_position_draft_count[idx] += 1
-
-                # Resample token from p_target(x) - p_draft(x)
-                resample_dist = (
-                    torch.exp(target_out_logprobs[:, first_collision_idx])
-                    - torch.exp(new_draft_token_logprobs[:, first_collision_idx])
-                ).clamp(min=0)
-                resample_dist = resample_dist / resample_dist.sum(dim=-1, keepdim=True)
-                resample_dist = torch.log(resample_dist)
-                resampled_token = select_index(resample_dist)
-
-                tokens_to_add = torch.concat(
-                    [
-                        new_draft_tokens[:, :first_collision_idx],
-                        resampled_token.unsqueeze(-1),
-                    ],
-                    dim=-1,
-                )
-            else:
-                total_matched_tokens += new_draft_tokens.size(-1)
-                total_draft_tokens += new_draft_tokens.size(-1)
-                for idx in octile_idxs_to_log:
-                    per_position_accept_count[idx] += 1
-                    per_position_draft_count[idx] += 1
-
-                if new_draft_tokens.size(-1) > 0 and torch.isin(new_draft_tokens[:, -1], stop_token_ids).any():
-                    # If we've reached <eos>, don't add bonus token
-                    tokens_to_add = new_draft_tokens
-                else:
-                    # If no collision, add all draft tokens plus the bonus token (if room)
-                    if cur_gen_idx + new_draft_tokens.size(-1) < generated_tokens.size(
-                        -1
-                    ):
-                        bonus_token = select_index(target_out_logprobs[:, -1])
-                        tokens_to_add = torch.concat(
-                            [
-                                new_draft_tokens,
-                                bonus_token.unsqueeze(-1),
-                            ],
-                            dim=-1,
-                        )
-                    else:
-                        tokens_to_add = new_draft_tokens
-
-
-
-            # Actually add the new tokens and update idxs
-            new_gen_idx = cur_gen_idx + tokens_to_add.size(-1)
-            generated_tokens[:, cur_gen_idx:new_gen_idx] = tokens_to_add
-            cur_gen_idx = new_gen_idx
-
-            # Update kv caches
-            # Either cache should not include the last generated tok (either correction or bonus token)
-            target_kv_cache = crop_kv_cache(target_kv_cache, new_gen_idx - 1)
-            draft_kv_cache = crop_kv_cache(draft_kv_cache, new_gen_idx - 1)
-
-            if track_iterations:
-                # FIXME: If we ever do batching this is wrong
-                draft_ids = new_draft_tokens[0].tolist()
-                draft_text = [tokenizer.decode([tid]) for tid in draft_ids]
-                last_token_str = tokenizer.decode([int(tokens_to_add[0, -1].item())])
-                if not rejected.any():
-                    result = (
-                        f"ALL ACCEPTED ({len(draft_ids)}) + BONUS '{last_token_str}'"
-                    )
-                else:
-                    first_collision_idx = rejected.int().argmax(dim=-1).item()
-                    assert isinstance(first_collision_idx, int)
-                    rejected_str = tokenizer.decode(
-                        [new_draft_tokens[0][first_collision_idx].item()]
-                    )
-                    result = f"ACCEPTED {first_collision_idx}, REJECTED '{rejected_str}' -> TARGET '{last_token_str}'"
-                iteration_history.append(
-                    {
-                        "iter": len(iteration_history),
-                        "drafted": draft_text,
-                        "result": result,
-                    }
-                )
-
-            if torch.isin(generated_tokens[:, cur_gen_idx - 1], stop_token_ids).any():
-                # Get rid of extra 0s
-                generated_tokens = generated_tokens[:, :cur_gen_idx]
-                break
-
-    total_time = get_time() - start_time
-
-    # Acceptance rate (matched draft tokens / total verified draft tokens)
-    acceptance_rate = (
-        total_matched_tokens / total_draft_tokens if total_draft_tokens > 0 else 0.0
-    )
-    total_generated_tokens = cur_gen_idx - input_ids.size(1)
-    octile_position_acceptance = [
-        acc / draf if draf > 0 else None for acc, draf in zip(per_position_accept_count, per_position_draft_count)
-    ]
-
-    metrics = {
-        "time": total_time,
-        "generated_tokens": total_generated_tokens,
-        "draft_tokens": total_draft_tokens,
-        "matched_tokens": total_matched_tokens,
-        "acceptance_rate": acceptance_rate,
-        "octile_position_acceptance": octile_position_acceptance,
-        "octile_positions": octile_offsets,
-        "num_iterations": num_iterations,
-        "toks_per_sec": total_generated_tokens / total_time if total_time > 0 else 0,
-    }
-
-    # Forward pass times for speedup factor
-    if draft_times_acc[2] > 0 and verifier_times_acc[2] > 0:
-        d_sum, d_sum_sq, d_n = draft_times_acc
-        v_sum, v_sum_sq, v_n = verifier_times_acc
-        average_draft_time = d_sum / d_n          # ms
-        average_verifier_time = v_sum / v_n        # ms
-        metrics["average_draft_time"] = average_draft_time / 1000  # seconds
-        metrics["average_verifier_time"] = average_verifier_time / 1000
-        # Variance of individual forward pass times (population variance, in ms^2)
-        raw_draft_variance = d_sum_sq / d_n - average_draft_time**2
-        raw_verifier_variance = v_sum_sq / v_n - average_verifier_time**2
-        metrics["draft_time_variance"] = max(raw_draft_variance, 0.0) / 1e6  # s^2
-        metrics["verifier_time_variance"] = max(raw_verifier_variance, 0.0) / 1e6  # s^2
-        metrics["draft_time_count"] = d_n
-        metrics["verifier_time_count"] = v_n
-
-    if track_iterations:
-        metrics["iteration_history"] = iteration_history
-
-    return generated_tokens, metrics
-
 
 def filter_logprobs(
     logprobs: torch.Tensor, top_k: int = 0, top_p: float = 0.0
