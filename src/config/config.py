@@ -51,7 +51,8 @@ class ExperimentConfig:
 @dataclass
 class MadusaConfig:
     task: Literal['general', 'translation']
-    model: str
+    draft_model: str|None
+    draft_model_type: str
     language_code: str
     num_heads: int
 
@@ -82,12 +83,15 @@ class MadusaConfig:
     wandb_project: str = "spec-dec-distill"
 
     def __post_init__(self):
-        if self.dataset_path == "None":
-            self.dataset_path = None
-        if self.hf_repo_id == "None":
-            self.hf_repo_id = None
-        if self.resume_from == "None":
-            self.resume_from = None
+        if self.draft_model == "None":
+            self.draft_model = None
+
+        if self.draft_model_type == 'medusa':
+            assert self.num_heads > 0
+            assert self.draft_model is not None
+
+        if isinstance(self.story_seed, str):
+            self.story_seed = None if self.story_seed == "None" else int(self.story_seed)
 
 @dataclass
 class DistillConfig:
