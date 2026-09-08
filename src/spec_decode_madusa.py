@@ -50,7 +50,7 @@ def get_stop_token_ids(tokenizer, eos_token_id=None):
     return stop_ids
 
 
-def crop_kv_cache(past_key_values, new_length):
+def crop_kv_cache(past_key_values, new_length, best_path, max_accept_len):
     """
     Crop KV cache to a specific sequence length.
     Handles both DynamicCache objects and tuple format.
@@ -58,9 +58,14 @@ def crop_kv_cache(past_key_values, new_length):
     if past_key_values is None:
         return None
 
-    if hasattr(past_key_values, "crop"):
-        past_key_values.crop(new_length)
-        return past_key_values
+    accepted_tree_idx = []
+    for i in range(max_accept_len):
+        node_idx = best_path[i]
+        accepted_tree_idx.append(past_key_values+node_idx)
+
+    keep_idx = torch.concat(range(new_length), accepted_tree_idx)
+    if hasattr(past_key_values, "select_indices") or hasattr(past_key_values, "select_idx"):
+        return past_key_values.select_index(keep_idx)
     else:
         new_past = []
         for layer_past in past_key_values:
@@ -75,7 +80,6 @@ def crop_kv_cache(past_key_values, new_length):
                 v_cropped = value_state[..., :new_length, :]
                 new_past.append((k_cropped, v_cropped))
         return tuple(new_past)
-
 
 def get_kv_cache_length(past_key_values) -> int:
     """Helper to get the current sequence length of a KV cache."""
@@ -453,6 +457,80 @@ def speculative_decode(
 
                 if len(accepted_in_path) > max_accept_len:
                     max_accept_len = len(accepted_in_path)
+                    best_accepted_token = accepted_in_path
+                    best_bonus_token = bonus_token
+                    best_bonus_logits = bonus_logits
+                    best_path = path
+            # step 4: updating octile acceptance counters
+            gen_offset = cur_gen_idx - prompt_len
+            draft_depth = len(best_path) if best_path is not None else 0
+
+            for i in range(7):
+                checkpoint = octile_offsets[i]
+                if gen_offset <= checkpoint and checkpoint < (gen_offset + draft_depth):
+                    per_position_draft_count[i] = per_position_draft_count[i]+1
+                    rel_depth = checkpoint - gen_offset
+                    if rel_depth == checkpoint - gen_offset:
+                        per_position_accept_count[i] = per_position_accept_count[i]+1
+
+            # step 5: commit accepted tokens and update seq len
+            tokens_to_add = torch.concat((best_accepted_token, best_bonus_token))
+            new_gen_idx = cur_gen_idx + tokens_to_add.size(dim=-1)
+            generated_tokens[:, cur_gen_idx:new_gen_idx] = tokens_to_add
+
+            total_matched_tokens += len(best_accepted_token)
+
+            # step 6: prune any unused tree kv cache and extract hidden state for next medusa pass
+            target_kv_cache = crop_kv_cache(
+                target_out.past_key_values,
+                new_gen_idx-1,
+                best_path,
+                max_accept_len
+            )
+            last_hidden = (target_out.hidden_States[-1])[:, best_path[max_accept_len-1]:best_path[max_accept_len+1, :]] if max_accept_len > 0
+            prev_target_logits = best_bonus_logits
+
+            cur_gen_idx = best_bonus_logits
+
+            if generated_tokens[:, cur_gen_idx] in stop_token_ids:
+                generated_tokens = generated_tokens[:, :cur_gen_idx]
+                break
+
+    total_time = get_time()- start_time
+    acceptance_rate = total_matched_tokens / total_draft_tokens if total_draft_tokens > 0 else 0.0
+
+    octile_position_acceptance = [
+        acc / draf if draf > 0 else None for acc, draf in zip(per_position_accept_count, per_position_draft_count)
+    ]
+
+    metrics = {
+        "time": total_time,
+        "generated_tokens": cur_gen_idx-prompt_len,
+        "draft_tokens": total_draft_tokens,
+        "matched_tokens": total_matched_tokens,
+        "acceptance_rate": acceptance_rate,
+        "num_iterations"
+        "octile_position_acceptance": octile_position_acceptance,
+        "octile_positions": octile_offsets,
+        "num_iterations": num_iterations,
+        "toks_per_sec": (cur_gen_idx-prompt_len) / total_time if total_time > 0 else 0,
+    }
+
+    # Forward pass times for speedup factor
+    if draft_times_acc[2] > 0 and verifier_times_acc[2] > 0:
+        v_sum, v_sum_sq, v_n = verifier_times_acc
+        average_verifier_time = v_sum / v_n        # ms
+        metrics["average_verifier_time"] = average_verifier_time / 1000
+        # Variance of individual forward pass times (population variance, in ms^2)
+        raw_verifier_variance = v_sum_sq / v_n - average_verifier_time**2
+        metrics["verifier_time_variance"] = max(raw_verifier_variance, 0.0) / 1e6  # s^2
+        metrics["verifier_time_count"] = v_n
+
+    if track_iterations:
+        metrics["iteration_history"] = iteration_history
+
+    return generated_tokens, metrics
+
 
 def filter_logprobs(
     logprobs: torch.Tensor, top_k: int = 0, top_p: float = 0.0
