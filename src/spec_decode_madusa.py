@@ -400,6 +400,59 @@ def speculative_decode(
             )
             verify_logits = target_out.logits
 
+            # step 3: evaluate candidate of tree paths to find the longest valid branch
+            best_path = None
+            best_accepted_token = []
+            best_bonus_token = None
+            best_bonus_logits = None
+            max_accept_len = -1
+
+            for path in tree_paths:
+                accepted_in_path = []
+                bonus_token = None
+                bonus_logits = None
+                path_matched = True
+
+                for depth in range(len(path)):
+                    node_i = path[depth]
+                    draft_token = draft_tree_tokens[:, node_i]
+
+                    if depth == 0:
+                        raw_pred_logits = prev_target_logits
+                    else:
+                        parent_node_idx = tree_nodes[node_i]["parent_idx"]
+                        raw_pred_logits = verify_logits[:, parent_node_idx, :]
+                    node_raw_logits = penalize_logits(
+                        raw_pred_logits,
+                        confirmed_len=cur_gen_idx+depth
+                    )
+                    target_dist = apply_filters(nn.LogSoftmax(node_raw_logits, dim=-1))
+                    verified_token = select_index(target_dist)
+
+                    if draft_token == verified_token:
+                        accepted_in_path.append(draft_token)
+                    else:
+                        bonus_token = verified_token
+                        bonus_logits = node_raw_logits
+                        path_matched = False
+                        break
+
+                if path_matched and bonus_token is None:
+                    last_node_idx = path[-1]
+                    bonnus_raw_logits = penalize_logits(
+                        verify_logits[:, last_node_idx, :],
+                        confirmed_len=cur_gen_idx+len(path),
+                        draft_so_far=generated_tokens
+                    )
+                    bonus_token = select_index(
+                        apply_filters(
+                            nn.LogSoftmax(bonnus_raw_logits, dim=-1)
+                        )
+                    )
+                    bonus_logits = bonnus_raw_logits
+
+                if len(accepted_in_path) > max_accept_len:
+                    max_accept_len = len(accepted_in_path)
 
 def filter_logprobs(
     logprobs: torch.Tensor, top_k: int = 0, top_p: float = 0.0
