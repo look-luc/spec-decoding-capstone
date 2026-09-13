@@ -53,8 +53,18 @@ def generate_output(
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         decoded = cast(str, decoded).strip()
         return decoded, metrics
-    if isinstance(draft_model, madusa):
-        pass
+    if isinstance(draft_model, madusa) or config.draft_model_type == "medusa":
+        output_ids, metrics = madusa_spec(
+            target_model=model,
+            madusa=madusa(config.draft_model),
+            tokenizer=tokenizer,
+            input_ids=inputs["input_ids"],
+            mode=config.decoding_mode,
+            max_new_tokens=config.max_new_tokens,
+            device=inputs["input_ids"].device,
+        )
+        decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
+        return cast(str, decoded).strip(), metrics
     if isinstance(draft_model, NGramModel):
         raise ValueError(
             "NGramModel can only be used with bespoke decoding implementation!"

@@ -37,6 +37,10 @@ class madusa(nn.Module):
         return self.base_model.config
 
     @property
+    def vocab_size(self):
+        return self.vocab_size
+
+    @property
     def device(self):
         return next(self.parameters()).device
 
