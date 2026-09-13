@@ -232,6 +232,66 @@ def spec_decode_mtp(
 
             mtp_out = draft_model.
 
+def filter_logprobs(
+    logprobs: torch.Tensor, top_k: int = 0, top_p: float = 0.0
+) -> torch.Tensor:
+    """Apply top-k and/or top-p filtering, then renormalize to valid log-probs."""
+    filtered = logprobs
+    if top_k > 0:
+        filtered = apply_top_k(filtered, k=top_k)
+    if 0.0 < top_p < 1.0:
+        filtered = apply_top_p(filtered, p=top_p)
+    if top_k > 0 or 0.0 < top_p < 1.0:
+        filtered = torch.log_softmax(filtered, dim=-1)
+    return filtered
+
+
+def sample(logprobs: torch.Tensor, mode: Literal["greedy", "sample"]):
+    """Sample a token index from (already filtered) log-probs."""
+    if mode == "greedy":
+        return logprobs.argmax(dim=-1)
+    return torch.distributions.Categorical(logits=logprobs).sample()
+
+def apply_top_k(logits: torch.Tensor, k: int) -> torch.Tensor:
+    """Filters logits to only keep the top k values."""
+    if k < 1:
+        raise ValueError(f"top_k must be >= 1, got {k}")
+
+    if k >= logits.size(-1):
+        return logits
+
+    top_values, _ = torch.topk(logits, k, dim=-1)
+    kth_value = top_values[..., -1, None]
+    indices_to_remove = logits < kth_value
+    logits_filtered = logits.masked_fill(indices_to_remove, float("-inf"))
+
+    return logits_filtered
+
+
+def apply_top_p(logits: torch.Tensor, p: float) -> torch.Tensor:
+    """Filters logits to keep the smallest set of top tokens whose cumulative prob >= p."""
+    if p < 0.0 or p > 1.0:
+        raise ValueError(f"top_p must be between 0.0 and 1.0, got {p}")
+
+    if p >= 1.0:
+        return logits
+
+    sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+    cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+    sorted_indices_to_remove = cumulative_probs > p
+
+    # to keep the borderline token
+    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+    sorted_indices_to_remove[..., 0] = False
+
+    indices_to_remove = sorted_indices_to_remove.scatter(
+        dim=-1, index=sorted_indices, src=sorted_indices_to_remove
+    )
+
+    logits_filtered = logits.masked_fill(indices_to_remove, float("-inf"))
+
+    return logits_filtered
+
 def apply_repetition_penalty(
     logits: torch.Tensor,
     context_ids: torch.Tensor,
@@ -255,7 +315,6 @@ def apply_repetition_penalty(
             logits[b,:max_vocab_index] * per_token_penalty,
         )
     return logits
-
 
 def apply_repetition_penalty_batched(
     logits: torch.Tensor,
