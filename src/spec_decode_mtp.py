@@ -37,6 +37,33 @@ def get_stop_token_ids(tokenizer, eos_token_id=None):
 
     return stop_ids
 
+def sliding_window(tokens, window):
+    if window <= 0 or len(tokens) <= window:
+        return tokens
+    return tokens[-window:]
+
+def any_in_set(tokens, target_set):
+    for token in tokens:
+        if token in target_set:
+            return True
+    return False
+
+
+def extract_token_ids(tree_nodes):
+    return torch.tensor([node.token_id for node in tree_nodes])
+
+def extract_all_leaf_paths(tree_nodes):
+    leaf_paths = []
+    for node in tree_nodes:
+        if len(node.children) == 0:
+            path = []
+            curr_node = node
+            while curr_node is not None:
+                path.append(curr_node)
+                curr_node = curr_node.parent
+            leaf_paths.append(path)
+    return leaf_paths
+
 def crop_kv_cache(past_key_values, new_length):
     """
     Crop KV cache to a specific sequence length.
@@ -76,6 +103,78 @@ def get_kv_cache_length(past_key_values) -> int:
         else:
             return past_key_values[0][0].size(-1)
     return 0
+
+def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
+    pass
+
+def get_node_depth(node):
+    depth = 0
+    curr = node
+    while curr.parent is not None:
+        depth += 1
+        curr = curr.parent
+    return depth
+
+def get_ancestor_tokens(node):
+    tokens = []
+    curr_node = node
+    while curr_node is not None:
+        tokens.append(curr_node.token_id)
+        curr_node = curr_node.parent
+    return tokens
+
+def build_eagle_tree_attn(tree_nodes, base_seq_len):
+    num_nodes = len(tree_nodes)
+    attn_mask = [[float('-inf')] * num_nodes for _ in range(num_nodes)]
+    pos_ids = [None] * num_nodes
+
+    for i in range(num_nodes):
+        node_i = tree_nodes[i]
+        try:
+            depth = node_i.depth
+        except Exception:
+            depth = get_node_depth(node=node_i)
+
+        pos_ids[i] = base_seq_len + depth
+
+        cur_ancestor = node_i
+        while cur_ancestor is not None:
+            attn_mask[i][cur_ancestor.index] = 0.0
+            cur_ancestor = cur_ancestor.parent
+
+    return attn_mask, pos_ids
+
+class Node:
+    def __init__(self, index, parent, token_id, hidden_state, depth, score):
+        self.index = index
+        self.parent = parent
+        self.token_id = token_id
+        self.hidden_state = hidden_state
+        self.depth = depth
+        self.score = score
+        self.children = []
+
+        if parent is not None:
+            parent.children.append(self)
+
+def create_node(index, parent, token_id, hidden_state, depth, score):
+    return Node(index, parent, token_id, hidden_state, depth, score)
+
+def eagle_draft_tree_expansion(
+    eagle_module,
+    root_hidden,
+    root_token_id,
+    tree_choices,
+    top_k,
+    top_p,
+    repetition_penalty,
+    repetition_penalty_window,
+    generated_tokens,
+    cur_gen_idx,
+    mode
+):
+    tree_nodes = []
+
 
 def spec_decode_mtp(
     target_model,
@@ -267,6 +366,12 @@ def apply_top_k(logits: torch.Tensor, k: int) -> torch.Tensor:
 
     return logits_filtered
 
+def top_k_sampling(logprods, k):
+    sorted_logprobs, sorted_idxs = torch.sort(logprods)
+
+    top_scores = sorted_logprobs[:k]
+    top_token_ids = sorted_idxs[:k]
+    return top_scores, top_token_ids
 
 def apply_top_p(logits: torch.Tensor, p: float) -> torch.Tensor:
     """Filters logits to keep the smallest set of top tokens whose cumulative prob >= p."""
