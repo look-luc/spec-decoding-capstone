@@ -423,6 +423,43 @@ def spec_decode_eagle(
         )
         first_token = sample(first_logprobs, mode)
 
+        generated_tokens[:, cur_gen_idx] = first_token
+        cur_gen_idx += 1
+
+        while cur_gen_idx < generated_tokens.size(-1):
+            num_iterations += 1
+            base_seq_len = cur_gen_idx
+            curr_token = generated_tokens[:, cur_gen_idx]
+
+            tree_nodes = eagle_draft_tree_expansion(
+                eagle_module=eagle_module,
+                root_hidden=last_hidden,
+                root_token_id=curr_token,
+                tree_choices=tree_choices,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                repetition_penalty_window=repetition_penalty_window,
+                generated_tokens=generated_tokens,
+                cur_gen_idx=cur_gen_idx,
+                mode=mode
+            )
+
+            flattened_tokens = extract_token_ids(tree_nodes=tree_nodes)
+            tree_attn_mask, tree_pos_ids = build_eagle_tree_attn(
+                tree_nodes=tree_nodes,
+                base_seq_len=base_seq_len
+            )
+
+            target_out = target_model(
+                input_ids=flattened_tokens,
+                attention_mask=tree_attn_mask,
+                pos_ids=tree_pos_ids,
+                past_key_values=target_kv_cache,
+                use_cache=True,
+                output_hidden_states=True
+            )
+
 def filter_logprobs(
     logprobs: torch.Tensor, top_k: int = 0, top_p: float = 0.0
 ) -> torch.Tensor:
