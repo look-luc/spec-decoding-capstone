@@ -402,6 +402,15 @@ def spec_decode_eagle(
     total_matched_tokens = 0
     num_iterations = 0
 
+    max_depth = len(tree_choices)
+    per_position_draft_count = [0] * max_depth
+    per_position_accept_count = [0] * max_depth
+    octile_offsets = list(range(1, max_depth + 1))
+
+    draft_times_acc = [0.0, 0.0, 0]     # [sum_ms, sum_sq_ms, count]
+    verifier_times_acc = [0.0, 0.0, 0]  # [sum_ms, sum_sq_ms, count]
+    iteration_history = []
+
     def get_time():
         if device.type == "cuda":
             torch.cuda.synchronize()
@@ -431,6 +440,7 @@ def spec_decode_eagle(
             base_seq_len = cur_gen_idx
             curr_token = generated_tokens[:, cur_gen_idx]
 
+            t_d0 = get_time()
             tree_nodes = eagle_draft_tree_expansion(
                 eagle_module=eagle_module,
                 root_hidden=last_hidden,
@@ -444,6 +454,16 @@ def spec_decode_eagle(
                 cur_gen_idx=cur_gen_idx,
                 mode=mode
             )
+            t_d1 = get_time()
+
+            d_ms = (t_d1 - t_d0) * 1000.0
+            draft_times_acc[0] += d_ms
+            draft_times_acc[1] += d_ms ** 2
+            draft_times_acc[2] += 1
+
+            for node in tree_nodes[1:]:
+                if 1 <= node.depth <= max_depth:
+                    per_position_draft_count[node.depth - 1] += 1
 
             flattened_tokens = extract_token_ids(tree_nodes=tree_nodes)
             tree_attn_mask, tree_pos_ids = build_eagle_tree_attn(
@@ -459,6 +479,133 @@ def spec_decode_eagle(
                 use_cache=True,
                 output_hidden_states=True
             )
+
+            target_raw_logits = target_out.logits
+            verifier_hiddens = target_out.last_hidden_state
+
+            penalize_target_logits = apply_repetition_penalty_batched(
+                logits=target_raw_logits,
+                generated_tokens=torch.concat(
+                    generated_tokens[:, :cur_gen_idx],
+                    flattened_tokens
+                ),
+                confirmed_len=cur_gen_idx,
+                penalty=repetition_penalty,
+                window=repetition_penalty_window
+            )
+            target_logprobs = filter_logprobs(
+                torch.log_softmax(
+                    penalize_target_logits
+                ),
+                top_k=top_k,
+                top_p=top_p
+            )
+
+            candidate_paths = extract_all_leaf_paths(tree_nodes=tree_nodes)
+            best_path = []
+            best_accept_count = -1
+            bonus_token = None
+            new_last_hidden = None
+
+            for path in candidate_paths:
+                accepted_in_paths = []
+                for step in range(len(path)-1):
+                    parent_node = path[step]
+                    child_node = path[step+1]
+
+                    pred_token = sample(
+                        target_logprobs[:, parent_node.index,:],
+                        mode
+                    )
+
+                    if pred_token == child_node.token_id:
+                        accepted_in_paths.append(child_node)
+                    else:
+                        break
+                if len(accepted_in_paths) > best_accept_count:
+                    best_accept_count = len(accepted_in_paths)
+                    best_path = accepted_in_paths
+
+                    last_accepted_node = accepted_in_paths[-1] if len(accepted_in_paths) else path[0]
+                    bonus_token = sample(
+                        target_logprobs[:, last_accepted_node.index, :],
+                        mode
+                    )
+                    new_last_hidden = verifier_hiddens[:, last_accepted_node.index, :]
+            # Record accepted position statistics
+            for node in best_path:
+                if 1 <= node.depth <= max_depth:
+                    per_position_accept_count[node.depth - 1] += 1
+
+            accepted_tokens = [
+                node.token_id for node in best_path
+            ]
+            tokens_to_add = torch.concat(
+                accepted_tokens,
+                [bonus_token]
+            )
+
+            new_gen_idx = cur_gen_idx + len(tokens_to_add)
+            generated_tokens[:, cur_gen_idx:new_gen_idx] = tokens_to_add
+            cur_gen_idx = new_gen_idx
+
+            total_matched_tokens = total_matched_tokens + best_accept_count
+            total_draft_tokens = total_draft_tokens + len(tree_nodes) - 1
+
+            target_kv_cache = crop_align_eagle_kv_cache(
+                kv_cache=target_out.past_key_values,
+                accepted_path_nodes=best_path,
+                base_seq_len=base_seq_len
+            )
+            last_hidden = new_last_hidden
+
+            if tokens_to_add in stop_token_ids:
+                generated_tokens = generated_tokens[:, :cur_gen_idx]
+                break
+
+    total_time = get_time() - start_time
+    acceptance_rate = total_matched_tokens / total_draft_tokens if total_draft_tokens > 0 else 0.0
+    total_generated_tokens = cur_gen_idx - prompt_len
+
+    octile_position_acceptance = [
+        acc / draf if draf > 0 else None
+        for acc, draf in zip(per_position_accept_count, per_position_draft_count)
+    ]
+
+    metrics = {
+        "time": total_time,
+        "generated_tokens": total_generated_tokens,
+        "draft_tokens": total_draft_tokens,
+        "matched_tokens": total_matched_tokens,
+        "acceptance_rate": acceptance_rate,
+        "octile_position_acceptance": octile_position_acceptance,
+        "octile_positions": octile_offsets,
+        "num_iterations": num_iterations,
+        "toks_per_sec": total_generated_tokens / total_time if total_time > 0 else 0,
+    }
+
+    if draft_times_acc[2] > 0 and verifier_times_acc[2] > 0:
+        d_sum, d_sum_sq, d_n = draft_times_acc
+        v_sum, v_sum_sq, v_n = verifier_times_acc
+
+        avg_draft = d_sum / d_n
+        avg_verifier = v_sum / v_n
+
+        metrics["average_draft_time"] = avg_draft / 1000.0
+        metrics["average_verifier_time"] = avg_verifier / 1000.0
+
+        raw_draft_var = (d_sum_sq / d_n) - (avg_draft ** 2)
+        raw_verifier_var = (v_sum_sq / v_n) - (avg_verifier ** 2)
+
+        metrics["draft_time_variance"] = max(raw_draft_var, 0.0) / 1e6
+        metrics["verifier_time_variance"] = max(raw_verifier_var, 0.0) / 1e6
+        metrics["draft_time_count"] = d_n
+        metrics["verifier_time_count"] = v_n
+
+    if track_iterations:
+        metrics["iteration_history"] = iteration_history
+
+    return generated_tokens, metrics
 
 def filter_logprobs(
     logprobs: torch.Tensor, top_k: int = 0, top_p: float = 0.0
