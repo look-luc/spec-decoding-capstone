@@ -2,7 +2,6 @@ import time
 from typing import Literal, cast
 
 import torch
-from _typeshed import FileDescriptor
 
 
 def get_stop_token_ids(tokenizer, eos_token_id=None):
