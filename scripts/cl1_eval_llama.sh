@@ -11,21 +11,6 @@
 #SBATCH --qos=blanca-clearlab1
 #SBATCH --mail-type=END,FAIL
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <config_file> <general|translation>" >&2
-    exit 1
-fi
-
-if [ ! -f "$1" ]; then
-    echo "Error: config file '$1' does not exist" >&2
-    exit 1
-fi
-
-if [ "$2" != "general" ] && [ "$2" != "translation" ]; then
-    echo "Error: second argument must be 'general' or 'translation' (got '$2')" >&2
-    exit 1
-fi
-
 export HF_HOME="/scratch/alpine/$USER/.cache/huggingface"
 mkdir -p $HF_HOME
 export WANDB_DIR="/scratch/alpine/$USER/wandb"
@@ -47,30 +32,21 @@ if torch.cuda.is_available():
 PY
 
 LANGS="amh ber chr grn haw ibo npi oci que yor zgh zh"
-NEEDS_SMALLER_BS=(amh que yor)
-
+GAMMAS="2 3 4"
 # DRAFT="Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-4B"
 
 # for draft in $DRAFT
 # do
     for lang in $LANGS
     do
-        if [[ " ${NEEDS_SMALLER_BS[*]} " == *" $lang "* ]]; then
-            uv run scripts/distill.py "$1" \
+        for gamma in $GAMMAS
+        do
+            uv run python run.py "$1" \
                 -o language_code=$lang \
-                output_dir="/scratch/alpine/$USER/spec-dec/" \
-                dataset_path="logprobs/logprobs-Qwen3.5-9B-$lang-$2.parquet" \
-                task=$2 \
-                batch_size=24 \
-                grad_accum_steps=6
-                # draft_model=$draft \
-        else
-            uv run scripts/distill.py "$1" \
-                -o language_code=$lang \
-                output_dir="/scratch/alpine/$USER/spec-dec/" \
-                dataset_path="logprobs/logprobs-Qwen3.5-9B-$lang-$2.parquet" \
-                task=$2
-                # draft_model=$draft \
-        fi
+                gamma=$gamma \
+                wandb_tag=final \
+                target_model="meta-llama/Llama-3.2-3B-Instruct" \
+                draft_model="meta-llama/Llama-3.2-1B-Instruct"
+        done
     done
 # done

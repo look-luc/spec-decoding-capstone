@@ -4,6 +4,9 @@ from typing import Literal
 WANDB_PROJECT = "speculative decoding v2"
 WANDB_ENTITY = "lecs-general"
 
+# Default dataset caps used in our experiments
+DEFAULT_MAX_BI = 6000
+DEFAULT_MAX_MONO = 20000
 
 @dataclass
 class ExperimentConfig:
@@ -28,8 +31,8 @@ class ExperimentConfig:
     use_hf_assisted: bool = False
     hf_schedule: Literal["heuristic", "constant"] | None = None
 
-    max_samples: int = 6000
-    max_samples_mono: int = 20000
+    max_samples: int = DEFAULT_MAX_BI
+    max_samples_mono: int = DEFAULT_MAX_MONO
     max_new_tokens: int = 128
     story_seed: int | None = 0
     device: str = "auto"
@@ -47,7 +50,6 @@ class ExperimentConfig:
 
         if isinstance(self.story_seed, str):
             self.story_seed = None if self.story_seed == "None" else int(self.story_seed)
-
 @dataclass
 class MadusaConfig:
     task: Literal['general', 'translation']
@@ -92,44 +94,3 @@ class MadusaConfig:
 
         if isinstance(self.story_seed, str):
             self.story_seed = None if self.story_seed == "None" else int(self.story_seed)
-
-@dataclass
-class DistillConfig:
-    task: Literal['general', 'translation']
-    teacher_model: str
-    student_model: str
-    language_code: str
-
-    # SeqKD dataset — HF dataset ID or local path with teacher logits, created with generate_
-    dataset_path: str | None = None
-    max_samples: int = 5000
-    top_k: int = 20 # How many teacher logits to keep per token
-
-    # Training
-    max_steps: int = 3000
-    batch_size: int = 4
-    grad_accum_steps: int = 8
-    learning_rate: float = 5e-5
-    weight_decay: float = 0.01
-    warmup_ratio: float = 0.06
-    lr_scheduler: Literal["cosine", "linear", "constant"] = "cosine"
-    max_length: int = 128
-    eval_split_ratio: float = 0.05
-    eval_every: int = 50
-
-    # Checkpointing & output
-    hf_repo_id: str | None = None
-    output_dir: str = "../distilled_models"
-    resume_from: str | None = None
-    log_every: int = 5
-
-    device: str = "auto"
-    wandb_project: str = "spec-dec-distill"
-
-    def __post_init__(self):
-        if self.dataset_path == "None":
-            self.dataset_path = None
-        if self.hf_repo_id == "None":
-            self.hf_repo_id = None
-        if self.resume_from == "None":
-            self.resume_from = None

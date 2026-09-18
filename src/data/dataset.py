@@ -30,6 +30,9 @@ def get_raw_url(url: str) -> str:
         return url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
     return url
 
+LANGUAGES = [
+    "amh", "ber", "chr", "grn", "haw", "ibo", "npi", "oci","que", "yor", "zgh"
+]
 
 def get_language_name(lang_code: str) -> str:
     """
@@ -44,7 +47,7 @@ def get_language_name(lang_code: str) -> str:
             if row["Code"].strip().lower() == lang_code:
                 return row["Language"].strip()
     # Fallback: return the code itself if not found
-    return lang_code
+    raise ValueError()
 
 
 mono_features = Features({"text": Value("string"), "origin": Value("string")})
@@ -129,6 +132,8 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
     dataset_list = []
     for _, row in paths.iterrows():
         path = row["hugging face"]
+        if "aya_dataset" in path:
+            continue
         assert isinstance(path, str)
 
         if str(path).startswith("http"):
@@ -155,7 +160,8 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
                     ds = load_dataset(repo, config, split=split, streaming=True)
                     assert isinstance(ds, IterableDataset)
                     break
-                except:
+                except Exception as e:
+                    logger.warning(e)
                     continue
             else:
                 raise ValueError(f"No split matching {[split_to_load, 'full', lang_code]} in {repo}")
