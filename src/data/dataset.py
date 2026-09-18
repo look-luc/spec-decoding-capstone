@@ -160,7 +160,8 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
                     ds = load_dataset(repo, config, split=split, streaming=True)
                     assert isinstance(ds, IterableDataset)
                     break
-                except:
+                except Exception as e:
+                    logger.warning(e)
                     continue
             else:
                 raise ValueError(f"No split matching {[split_to_load, 'full', lang_code]} in {repo}")
