@@ -13,7 +13,7 @@ from typing import Literal, cast
 import torch
 import torch.nn as nn
 
-from src.models.madusa import madusa
+from src.models import madusa
 
 
 def get_stop_token_ids(tokenizer, eos_token_id=None):
@@ -222,7 +222,7 @@ def speculative_decode(
     tokenizer,
     input_ids,
     mode:Literal["greedy", "sample"],
-    madusa:nn.Module,
+    medusa:nn.Module|None,
     max_new_tokens=128,
     tree_choices:str|list[list]="Standard",
     top_k=0,
@@ -260,6 +260,9 @@ def speculative_decode(
 
     if device is None:
         device = next(target_model.parameters()).device
+
+    if medusa is None:
+        medusa = madusa.madusa(base_model=target_model)
 
     if isinstance(tree_choices, str):
         tree_choices = default_tree(tree_choices)
@@ -310,7 +313,7 @@ def speculative_decode(
 
     # This is okay because if we've gotten this far, we know the actual tokenizers are the same length.
     # Just be aware that logits may have a slightly shorter dimension
-    d_vocab = max(madusa.vocab_size, target_model.config.vocab_size)
+    d_vocab = max(medusa.vocab_size, target_model.config.vocab_size)
 
     # B,S+max_new
     generated_tokens = torch.concat(
@@ -373,7 +376,7 @@ def speculative_decode(
         while cur_gen_idx < generated_tokens.size(-1):
             num_iterations += 1
             past_kv_len = get_kv_cache_length(target_kv_cache)
-            medusa_logits = madusa(last_hidden)
+            medusa_logits = medusa.last_hidden
 
             # Step 1: parallel draft candidate tree generation via the medusa heads
             tree_data = build_tree(
