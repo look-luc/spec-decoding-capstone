@@ -3,6 +3,8 @@ from typing import Literal, cast
 
 import torch
 
+from src.models.eagle import EagleModule
+
 
 def get_stop_token_ids(tokenizer, eos_token_id=None):
     """
@@ -338,6 +340,13 @@ def spec_decode_eagle(
     if device is None:
         device = next(target_model.parameters()).device
 
+    if eagle_module is None:
+        eagle_module = EagleModule(
+            vocab_size=target_model.config.vocab_size,
+            embed_dim=target_model.config.hidden_size,
+            hidden_dim=target_model.config.hidden_size
+        )
+
     def apply_filters(logprobs: torch.Tensor) -> torch.Tensor:
         return filter_logprobs(logprobs, top_k=top_k, top_p=top_p)
 
@@ -394,7 +403,7 @@ def spec_decode_eagle(
         dim=-1,
     )
 
-    prompt_len = input_ids.sie(dim=-1)
+    prompt_len = input_ids.size(dim=-1)
     cur_gen_idx = prompt_len
 
     total_draft_tokens = 0
@@ -424,12 +433,8 @@ def spec_decode_eagle(
 
         last_hidden = target_out.last_hidden_state[:, -1, :]
         first_logits = penalize_logits(target_out.logits[:, -1, :], confirmed_len=cur_gen_idx)
-        first_logprobs = filter_logprobs(
-            torch.log_softmax(first_logits),
-            top_k,
-            top_p
-        )
-        first_token = sample(first_logprobs, mode)
+        first_logprobs = apply_filters(torch.log_softmax(first_logits))
+        first_token = select_index(first_logprobs)
 
         generated_tokens[:, cur_gen_idx] = first_token
         cur_gen_idx += 1
@@ -512,10 +517,7 @@ def spec_decode_eagle(
                     parent_node = path[step]
                     child_node = path[step+1]
 
-                    pred_token = sample(
-                        target_logprobs[:, parent_node.index,:],
-                        mode
-                    )
+                    pred_token = select_index(target_logprobs[:, parent_node.index, :])
 
                     if pred_token == child_node.token_id:
                         accepted_in_paths.append(child_node)
