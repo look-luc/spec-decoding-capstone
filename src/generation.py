@@ -5,9 +5,11 @@ import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from src.config.config import ExperimentConfig
+from src.models.eagle import EagleModule
 from src.models.madusa import madusa
 from src.n_gram import NGramModel
 from src.spec_decode import speculative_decode
+from src.spec_decode_eagle import spec_decode_eagle
 from src.spec_decode_madusa import speculative_decode as madusa_spec
 
 
@@ -53,10 +55,22 @@ def generate_output(
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         decoded = cast(str, decoded).strip()
         return decoded, metrics
-    if isinstance(draft_model, madusa) or config.draft_model_type == "medusa":
+    if isinstance(draft_model, madusa) or config.draft_model_type.lower() == "medusa":
         output_ids, metrics = madusa_spec(
             target_model=model,
-            madusa=madusa(config.draft_model),
+            medusa=madusa(config.draft_model),
+            tokenizer=tokenizer,
+            input_ids=inputs["input_ids"],
+            mode=config.decoding_mode,
+            max_new_tokens=config.max_new_tokens,
+            device=inputs["input_ids"].device,
+        )
+        decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
+        return cast(str, decoded).strip(), metrics
+    if isinstance(draft_model, EagleModule) or config.draft_model_type.lower() == "eagle":
+        output_ids, metrics = spec_decode_eagle(
+            target_model=model,
+            eagle_module=None,
             tokenizer=tokenizer,
             input_ids=inputs["input_ids"],
             mode=config.decoding_mode,
