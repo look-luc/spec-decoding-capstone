@@ -51,8 +51,8 @@ class ExperimentConfig:
 @dataclass
 class MadusaConfig:
     task: Literal['general', 'translation']
-    draft_model: str|None
-    draft_model_type: str
+    target_model: str|None
+    target_model_type: str
     language_code: str
     num_heads: int
 
@@ -86,7 +86,7 @@ class MadusaConfig:
         if self.draft_model == "None":
             self.draft_model = None
 
-        if self.draft_model_type == 'medusa':
+        if self.target_model_type == 'medusa':
             assert self.num_heads > 0
             assert self.draft_model is not None
 
@@ -96,8 +96,8 @@ class MadusaConfig:
 @dataclass
 class EagleConfig:
     task: Literal['general', 'translation']
-    draft_model: str|None
-    draft_model_type: str
+    target_model: str|None
+    target_model_type: str
     language_code: str
     num_heads: int
 
@@ -130,10 +130,6 @@ class EagleConfig:
     def __post_init__(self):
         if self.draft_model == "None":
             self.draft_model = None
-
-        if self.draft_model_type == 'medusa':
-            assert self.num_heads > 0
-            assert self.draft_model is not None
 
         if isinstance(self.story_seed, str):
             self.story_seed = None if self.story_seed == "None" else int(self.story_seed)

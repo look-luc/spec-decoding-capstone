@@ -19,6 +19,7 @@ Imports from within src folder
 '''
 from src.config.config import (  # config functions and key
     WANDB_ENTITY,
+    EagleConfig,
     ExperimentConfig,
     MadusaConfig,
 )
@@ -45,7 +46,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def run(config: ExperimentConfig|MadusaConfig):
+def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
     """Run experiment: load config, init wandb, dispatch to task (e.g. translation)."""
     if config.task == "translation":
         from src.tasks.translation import compute_eval_metrics, load_data
