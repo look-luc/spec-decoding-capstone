@@ -283,7 +283,7 @@ def spec_decode_eagle(
     input_ids: torch.Tensor,
     mode: Literal["greedy", "sample"],
     max_new_tokens: int = 128,
-    tree_choices:list[int]=[1,4,2,2],
+    tree_choices:list[int]|None=None,
     top_k: int = 0,
     top_p: float = 0.0,
     repetition_penalty: float = 1.1,
@@ -340,6 +340,8 @@ def spec_decode_eagle(
     if device is None:
         device = next(target_model.parameters()).device
 
+    if tree_choices is None:
+        tree_choices = [1,4,2,2]
     if eagle_module is None:
         eagle_module = EagleModule(
             vocab_size=target_model.config.vocab_size,

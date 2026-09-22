@@ -87,11 +87,7 @@ def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
         else:
             draft_model = target_model
             draft_tokenizer = target_tokenizer
-    elif config.draft_model_type == "medusa":
-        if config.target_model is None:
-            raise ValueError(
-                "draft_model must be set when draft_model_type='medusa'"
-            )
+    elif config.draft_model_type == "medusa" or config.draft_model_type == "eagle":
         logger.info(f"Loading draft model: {config.draft_model}...")
         draft_model, draft_tokenizer = load_model(
             config.draft_model, device=config.device
@@ -155,9 +151,10 @@ def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
 
 
 def setup_wandb(config: ExperimentConfig):
-    target_short = config.target_model.split("/")[-1]
+    target_short = config.target_model.split("/")[-1] if config.target_model is not None else None
     is_spec = config.draft_model_type != "none"
-    is_medusa = config.draft_model_type != "none" and config.draft_model_type != is_spec
+    is_medusa = config.draft_model_type == "medusa"
+    is_eagle = config.draft_model_type == "eagle"
     if config.draft_model_type == 'ngram':
         draft_short = "ngram"
     elif config.draft_model_type == 'neural':
@@ -165,6 +162,8 @@ def setup_wandb(config: ExperimentConfig):
             draft_short = config.draft_model.split("/")[-1] # type:ignore
         else:
             draft_short = target_short
+    elif config.draft_model_type == "medusa" or config.draft_model_type == "eagle":
+        draft_short = config.draft_model.split("/")[-1] # type:ignore
     else:
         draft_short = None
 
@@ -174,6 +173,8 @@ def setup_wandb(config: ExperimentConfig):
         name = f"{config.language_code}_{draft_short}_g{config.gamma}"
     elif is_medusa:
         name = f"{config.language_code}_{draft_short}_h{config.num_heads}"
+    elif is_eagle:
+        name = f"{config.language_code}_{draft_short}_h{config.tree_choices}"
     else:
         name = f"{config.language_code}_baseline"
 
