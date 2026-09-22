@@ -87,14 +87,14 @@ def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
         else:
             draft_model = target_model
             draft_tokenizer = target_tokenizer
-    elif config.target_model_type == "medusa":
+    elif config.draft_model_type == "medusa":
         if config.target_model is None:
             raise ValueError(
-                "draft_model must be set when draft_model_type='neural'"
+                "draft_model must be set when draft_model_type='medusa'"
             )
         logger.info(f"Loading draft model: {config.draft_model}...")
         draft_model, draft_tokenizer = load_model(
-            config.target_model, device=config.device
+            config.draft_model, device=config.device
         )
     elif config.draft_model_type == "ngram":
         draft_tokenizer = target_tokenizer
