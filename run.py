@@ -53,7 +53,7 @@ def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
     elif config.task == "story_gen":
         from src.tasks.story_gen import compute_eval_metrics, load_data
     else:
-        raise NotImplementedError(f"Unknown task: {config.task!r}")
+        raise NotImplementedError(f"Unknown task: {config.task}")
 
     # 1. Load target model
     logger.info(f"Loading target model: {config.target_model}...")
