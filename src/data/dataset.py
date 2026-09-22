@@ -71,6 +71,7 @@ def standardize_columns_mono(ds: Dataset | IterableDataset, language: str, lang_
             "Mayan", "Mayan language",  # Specific to yua datasets
             "sentence", "text_sentence", "content", "Article",
             "Source", "Target","inputs"         # Common in parallel-formatted mono data
+            "aed", "TUN", "Tunis", "tunisian", "Tunisian", "tn"
         ]
         for col in search_cols:
             if col in current_cols:
@@ -98,6 +99,8 @@ def standardize_columns_bi(ds: Dataset | IterableDataset, language: str, lang_co
 
     if 'english' in current_cols:
         ds = ds.rename_column('english', "English")
+    elif 'en' in current_cols:
+        ds = ds.rename_column('en', "English")
     if language.lower() in current_cols:
         ds = ds.rename_column(language.lower(), language)
     ds = ds.select_columns(['English', language, "origin"])

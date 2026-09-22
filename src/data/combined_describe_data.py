@@ -23,7 +23,7 @@ MAX_MONO = 20000
 MAX_BI=6000
 
 languages = [
-    "amh", "ber", "chr", "grn", "haw", "ibo", "npi", "oci","que", "yor", "zgh"
+    "amh", "ber", "chr", "grn", "haw", "ibo", "npi", "oci","que", "yor", "zgh", "aed"
 ]
 
 # Cut: lkt,mus,oji
