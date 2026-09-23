@@ -92,6 +92,11 @@ def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
         draft_model, draft_tokenizer = load_model(
             config.draft_model, device=config.device
         )
+    elif config.draft_model_type == "eagle":
+        logger.info(f"Loading draft model: {config.draft_model}...")
+        draft_model, draft_tokenizer = load_model(
+            config.draft_model, device=config.device
+        )
     elif config.draft_model_type == "ngram":
         draft_tokenizer = target_tokenizer
         draft_model = NGramModel(n=config.ngram_n, tokenizer=draft_tokenizer, vocab_size=target_model.config.vocab_size)
