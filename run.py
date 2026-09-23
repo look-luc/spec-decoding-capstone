@@ -196,6 +196,8 @@ def setup_wandb(config: ExperimentConfig):
     wandb_config["run_type"] = job_type
     wandb_config["slurm_job_id"] = os.environ.get("SLURM_JOB_ID")
 
+    os.environ["WANDB_START_METHOD"] = "thread"
+
     wandb.init(
         project=config.wandb_project,
         entity=WANDB_ENTITY,
