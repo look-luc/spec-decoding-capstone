@@ -12,7 +12,7 @@ class ExperimentConfig:
 
     target_model: str
     draft_model: str | None
-    draft_model_type: Literal["none", "neural", "ngram", "medusa", "multitoken"]
+    draft_model_type: Literal["none", "neural", "ngram", "medusa", "eagle", "multitoken"]
     decoding_mode: Literal["greedy", "sample"]
     top_k: int = 0
     top_p: float = 0.0
@@ -51,10 +51,13 @@ class ExperimentConfig:
 @dataclass
 class MadusaConfig:
     task: Literal['general', 'translation']
-    target_model: str|None
+    target_model: str
+    draft_model: str|None
     target_model_type: str
     language_code: str
     num_heads: int
+
+    draft_model_type: Literal["none", "neural", "ngram", "medusa", "eagle", "multitoken"]
 
     # SeqKD dataset — HF dataset ID or local path with teacher logits, created with generate_
     dataset_path: str | None = None
@@ -97,9 +100,12 @@ class MadusaConfig:
 class EagleConfig:
     task: Literal['general', 'translation']
     target_model: str|None
+    draft_model: str
     target_model_type: str
     language_code: str
-    num_heads: int
+    tree_choices: list[int]
+
+    draft_model_type: Literal["none", "neural", "ngram", "medusa", "eagle", "multitoken"]
 
     # SeqKD dataset — HF dataset ID or local path with teacher logits, created with generate_
     dataset_path: str | None = None

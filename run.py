@@ -87,7 +87,7 @@ def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
         else:
             draft_model = target_model
             draft_tokenizer = target_tokenizer
-    elif config.draft_model_type == "medusa" or config.draft_model_type == "eagle":
+    elif config.draft_model_type == "medusa":
         logger.info(f"Loading draft model: {config.draft_model}...")
         draft_model, draft_tokenizer = load_model(
             config.draft_model, device=config.device
