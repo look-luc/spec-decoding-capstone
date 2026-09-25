@@ -8,7 +8,8 @@ from src.config.config import ExperimentConfig
 from src.data.create_inputs import create_inputs, create_prompt
 from src.tasks.translation import compute_eval_metrics, load_data
 from src.utils import load_model
-langs = ["amh","ber","chr","grn","haw","ibo","npi","oci","que","yor","zgh","zh"]
+
+langs = ["amh","ber","chr","grn","haw","ibo","npi","oci","que","yor","zgh","zh", "aed"]
 
 
 base_model, tokenizer = load_model("Qwen/Qwen3.5-0.8B")

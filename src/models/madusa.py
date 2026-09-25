@@ -22,12 +22,12 @@ class madusa(nn.Module):
         except Exception as e:
             print(f"error raised: {e}")
 
-        hidden_size = self.base_model.config.hidden_size
-        vocab_size = self.base_model.config.vocab_size
+        self.hidden_size = self.base_model.config.hidden_size
+        self.vocab_size = self.base_model.config.vocab_size
 
         self.heads = nn.ModuleList(
             [
-                self.medusa_heads(hidden_size, vocab_size)
+                self.medusa_heads(self.hidden_size, self.vocab_size)
                 for _ in range(num_heads)
             ]
         )
@@ -38,11 +38,7 @@ class madusa(nn.Module):
 
     @property
     def vocab_size(self):
-        return self.vocab_size
-
-    @property
-    def device(self):
-        return next(self.parameters()).device
+        return self.base_model.config.vocab_size
 
     @property
     def dtype(self):
@@ -57,8 +53,9 @@ class madusa(nn.Module):
         )
 
         last_hidden = outputs.hidden_states[-1]
-        medusa_logits = [
-            head(last_hidden) for head in self.heads
-        ]
+        medusa_logits = []
+
+        for head in self.heads:
+            medusa_logits.append(head(last_hidden))
 
         return outputs.logits, medusa_logits, outputs.past_key_values

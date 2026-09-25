@@ -8,7 +8,7 @@ Contains:
 """
 
 import time
-from typing import Literal, cast
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -152,13 +152,12 @@ def build_tree(
     top_token_per_head = []
     for i in range(num_heads):
         max_rank = max(tree_choice[i])
-        head_logits = logits[0,i,:]
-        filter_logits = filter_logprobs(
-            nn.LogSoftmax(head_logits, dim=1),
+        head_logits = filter_logprobs(
+            nn.LogSoftmax(logits[i], dim=1),
             top_k=top_k,
             top_p=top_p
         )
-        top_ids = torch.topk(logits[0, i], k=max_rank + 1).indices
+        top_ids = torch.topk(head_logits, k=max_rank + 1).indices
         top_token_per_head.append(top_ids)
 
     nodes = []

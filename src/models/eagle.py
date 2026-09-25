@@ -3,12 +3,14 @@ import torch.nn as nn
 
 
 class EagleModule(nn.Module):
-    def __init__(self, vocab_size: int, embed_dim: int, hidden_dim: int):
+    def __init__(self, vocab_size: int, embed_dim: int, hidden_dim: int, num_heads:int=8):
         super().__init__()
         self.embeddings = nn.Embedding(vocab_size, embed_dim)
         self.fc_fusion = nn.Linear(embed_dim + hidden_dim, hidden_dim)
         self.decoder_layer = nn.TransformerDecoderLayer(
-            d_model=hidden_dim, nhead=8, batch_first=True
+            d_model=hidden_dim,
+            nhead=num_heads,
+            batch_first=True
         )
         self.lm_head = nn.Linear(hidden_dim, vocab_size, bias=False)
 
