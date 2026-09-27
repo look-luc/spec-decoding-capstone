@@ -18,7 +18,7 @@
 #### For `train_eagle`
 - [ ] Configure the tree draft head parameters, sequence truncation length, and hidden state feature extraction setup
 
-## #Running Experimental Benchmarks & Evaluation
+### Running Experimental Benchmarks & Evaluation
 - [ ] Medusa Spec Decoding
   - [ ] Make sure to set `--max_new_tokens` to increase the generation token cutoff
   - [ ] Adjust candidate tree tree-structure choices to `num_heads`
