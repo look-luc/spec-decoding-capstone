@@ -17,6 +17,7 @@
 #### For `train_eagle`
 - [ ] Configure the tree draft head parameters, sequence truncation length, and hidden state feature extraction setup
 
+#### Train linear addition of base model
 - [ ] Run the training for medusa and eagle
 
 ### Running Experimental Benchmarks & Evaluation
