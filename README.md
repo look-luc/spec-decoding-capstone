@@ -1,4 +1,31 @@
 # spec-decoding
+
+## ToDo
+### Before running tests:
+- [ ] Increase max samples in the config files
+- [ ] Double check if [eval_kl](src/tasks/distillation/eval_kl.py) file
+- [ ] Find a way to add different num heads for medusa
+- [ ] Find a way to add EAGLE-1 (Static Tree) and EAGLE-2 (Dynamic Tree) for testing
+
+### Before running spec decoding for medusa and eagle:
+- [ ] Add a way to save weights for individual additions to the base model
+- [ ] Run the training for medusa and eagle
+
+#### For `train_heads`
+- [ ] Adjust the training sequence length (`max_seq_len`), batch size, learning rate, and total training epochs/steps
+- [ ] Test 8 and 16 heads
+
+#### For `train_eagle`
+- [ ] Configure the tree draft head parameters, sequence truncation length, and hidden state feature extraction setup
+
+## #Running Experimental Benchmarks & Evaluation
+- [ ] Medusa Spec Decoding
+  - [ ] Make sure to set `--max_new_tokens` to increase the generation token cutoff
+  - [ ] Adjust candidate tree tree-structure choices to `num_heads`
+- [ ] EAGLE Spec Decoding
+  - [ ] Set `--max_new_tokens` and update `TREE_CHOICES`
+    - ties to the eagle-1 and eagle-2 above
+
 ## Setup
 Clone with submodules:
 ```bash
@@ -32,29 +59,3 @@ Our three main scripts each take an ini-style config file (`.cfg`). The source o
 ## Links
 - [📝 Notes doc](https://docs.google.com/document/d/1GcsLQniqIWbxFAj_zbTSZS0302S73-ZZPJ2WA_w1w9g/edit?usp=sharing)
 - [📆 Project timeline](https://www.notion.so/Multilingual-Speculative-Decoding-2bc9f22610ac80a98c0bf2eedb6e3457?source=copy_link)
-
-# ToDo
-## Before running tests:
-- [ ] Increase max samples in the config files
-- [ ] Double check if [eval_kl](src/tasks/distillation/eval_kl.py) file
-- [ ] Find a way to add different num heads for medusa
-- [ ] Find a way to add EAGLE-1 (Static Tree) and EAGLE-2 (Dynamic Tree) for testing
-
-## Before running spec decoding for medusa and eagle:
-- [ ] Add a way to save weights for individual additions to the base model
-- [ ] Run the training for medusa and eagle
-
-### For `train_heads`
-- [ ] Adjust the training sequence length (`max_seq_len`), batch size, learning rate, and total training epochs/steps
-- [ ] Test 8 and 16 heads
-
-### For `train_eagle`
-- [ ] Configure the tree draft head parameters, sequence truncation length, and hidden state feature extraction setup
-
-## Running Experimental Benchmarks & Evaluation
-- [ ] Medusa Spec Decoding
-  - [ ] Make sure to set `--max_new_tokens` to increase the generation token cutoff
-  - [ ] Adjust candidate tree tree-structure choices to `num_heads`
-- [ ] EAGLE Spec Decoding
-  - [ ] Set `--max_new_tokens` and update `TREE_CHOICES`
-    - ties to the eagle-1 and eagle-2 above
