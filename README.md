@@ -9,7 +9,6 @@
 
 ### Before running spec decoding for medusa and eagle:
 - [ ] Add a way to save weights for individual additions to the base model
-- [ ] Run the training for medusa and eagle
 
 #### For `train_heads`
 - [ ] Adjust the training sequence length (`max_seq_len`), batch size, learning rate, and total training epochs/steps
@@ -17,6 +16,8 @@
 
 #### For `train_eagle`
 - [ ] Configure the tree draft head parameters, sequence truncation length, and hidden state feature extraction setup
+
+- [ ] Run the training for medusa and eagle
 
 ### Running Experimental Benchmarks & Evaluation
 - [ ] Medusa Spec Decoding
