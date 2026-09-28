@@ -2,7 +2,7 @@
 
 ## ToDo
 ### Before running tests:
-- [ x ] Increase max samples in the config files
+- [x] Increase max samples in the config files
 - [ ] Double check if [eval_kl](src/tasks/distillation/eval_kl.py) file
 - [ ] Find a way to add different num heads for medusa
 - [ ] Find a way to add EAGLE-1 (Static Tree) and EAGLE-2 (Dynamic Tree) for testing
