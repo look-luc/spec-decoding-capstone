@@ -46,9 +46,14 @@ def compute_kl(student, batch, device) -> torch.Tensor:
         logits = student(input_ids=input_ids, attention_mask=attention_mask).logits
         logprobs = torch.nn.functional.log_softmax(logits[..., :-1, :].contiguous(), dim=-1)
         student_logprobs = logprobs.gather(dim=-1, index=topk_logprobs_idx)
-        kl = (torch.exp(topk_logprobs) * (topk_logprobs - student_logprobs)).sum(-1)
-        kl = (kl * label_mask).sum() / label_mask.sum().clamp(min=1)
-    return kl
+
+        # Elementwise KL divergence at top-k teacher targets
+        kl_per_token = (torch.exp(topk_logprobs) * (topk_logprobs - student_logprobs)).sum(-1)
+
+        sum_kl = (kl_per_token * label_mask).sum()
+        num_tokens = label_mask.sum()
+
+    return sum_kl, num_tokens
 
 
 def build_collate_fn(tokenizer, student_dtype):
@@ -115,9 +120,9 @@ def evaluate_language(
     total_kl = 0.0
     count = 0
     for batch in dataloader:
-        kl = compute_kl(student, batch, dev)
-        total_kl += kl.item()
-        count += 1
+        sum_kl, num_tokens = compute_kl(student, batch, dev)
+        total_kl += sum_kl.item()
+        count += num_tokens.item()
     avg_kl = total_kl / max(count, 1)
     logger.info(f"[{lang}] Avg KL: {avg_kl:.6f}")
 
