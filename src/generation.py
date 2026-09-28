@@ -1,3 +1,4 @@
+import os
 import time
 from typing import cast
 
@@ -71,9 +72,19 @@ def generate_output(
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         return cast(str, decoded).strip(), metrics
     if isinstance(draft_model, EagleModule) or config.draft_model_type.lower() == "eagle":
+        eagle_module = EagleModule(
+            vocab_size=model.config.vocab_size,
+            embed_dim=model.config.hidden_size,
+            hidden_dim=model.config.hidden_size,
+            num_heads=config.num_heads,
+        ).to(config.device)
+
+        eagle_state_dict = torch.load(os.path.join(config.draft_model_dir, "eagle_module.pt"), map_location=config.device)
+        eagle_module.load_state_dict(eagle_state_dict)
+
         output_ids, metrics = spec_decode_eagle(
             target_model=model,
-            eagle_module=draft_model,
+            eagle_module=eagle_module,
             tokenizer=tokenizer,
             input_ids=inputs,
             mode=config.decoding_mode,

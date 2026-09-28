@@ -8,13 +8,13 @@
 - [x] Find a way to add EAGLE-1 (Static Tree) and EAGLE-2 (Dynamic Tree) for testing
 
 ### Before running spec decoding for medusa and eagle:
-- [ ] Add a way to save weights for individual additions to the base model
+- [x] Add a way to save weights for individual additions to the base model
 
 #### Train linear addition of base model
 - [ ] Run the training for medusa and eagle
 
+### Running experiments
 ##### For `train_heads`
-- [ ] Adjust the training sequence length (`max_seq_len`), batch size, learning rate, and total training epochs/steps
 - [ ] Test 8 and 16 heads
 
 ##### For `train_eagle`
@@ -22,7 +22,6 @@
 
 ### Running Experimental Benchmarks & Evaluation
 - [ ] Medusa Spec Decoding
-  - [ ] Make sure to set `--max_new_tokens` to increase the generation token cutoff
   - [ ] Adjust candidate tree tree-structure choices to `num_heads`
 - [ ] EAGLE Spec Decoding
   - [ ] Set `--max_new_tokens` and update `TREE_CHOICES`

@@ -308,6 +308,21 @@ def run_medusa_training(config: MadusaConfig):
         push_to_hub=bool(config.hf_repo_id), scheduler=scheduler,
     )
     wandb.finish()
+    save_medusa_weights(medusa_model, config.output_dir, "medusa_heads.pt")
+
+def save_medusa_weights(medusa_model, output_dir: str, filename: str = "medusa_heads.pt"):
+    """Saves only the trainable Medusa projection heads."""
+    os.makedirs(output_dir, exist_ok=True)
+    save_path = os.path.join(output_dir, filename)
+
+    # Extract only the medusa heads parameters
+    if hasattr(medusa_model, "heads"):
+        state_dict = medusa_model.heads.state_dict()
+    else:
+        state_dict = medusa_model.state_dict()
+
+    torch.save(state_dict, save_path)
+    logger.info(f"Saved Medusa head weights to: {save_path}")
 
 def _restore_training_state(config: MadusaConfig, optimizer, scheduler, device) -> int:
     """Restore optimizer and scheduler state from checkpoint; return starting step."""
