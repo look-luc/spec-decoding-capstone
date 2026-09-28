@@ -148,12 +148,29 @@ def build_tree(
     top_p,
     mode
 ):
-    num_heads = logits.size(dim=1)
+    if logits.ndim == 3:
+        logits = logits.squeeze(1)
+
+    num_heads = logits.size(0)
+
+    valid_tree_choice = []
+    for path in tree_choice:
+        if len(path) <= num_heads:
+            valid_tree_choice.append(path)
+        else:
+            valid_tree_choice.append(path[:num_heads])
+
+    max_rank_per_depth = [0] * num_heads
+    for path in valid_tree_choice:
+        for depth, rank in enumerate(path):
+            if rank > max_rank_per_depth[depth]:
+                max_rank_per_depth[depth] = rank
+
     top_token_per_head = []
-    for i in range(num_heads):
-        max_rank = max(tree_choice[i])
+    for depth in range(num_heads):
+        max_rank = max_rank_per_depth[depth]
         head_logits = filter_logprobs(
-            nn.LogSoftmax(logits[i], dim=1),
+            nn.LogSoftmax(logits[depth], dim=-1),
             top_k=top_k,
             top_p=top_p
         )
@@ -162,10 +179,8 @@ def build_tree(
 
     nodes = []
     node_dict = {}
-    paths = []
 
-    for path in tree_choice:
-        node_path = []
+    for path in valid_tree_choice:
         for depth in range(len(path)):
             rank = path[depth]
             token_id = top_token_per_head[depth][rank]
@@ -176,7 +191,7 @@ def build_tree(
                 node_dict[prefix] = new_node_idx
 
                 parent_prefix = prefix[:-1]
-                parent_idx = node_dict[parent_prefix] if len(parent_prefix)>0 else None
+                parent_idx = node_dict[parent_prefix] if len(parent_prefix) > 0 else None
 
                 nodes.append(
                     {
@@ -186,33 +201,33 @@ def build_tree(
                         "parent_idx": parent_idx
                     }
                 )
-                node_path.append(node_dict[parent_prefix])
-    size = len(nodes)
 
-    draft_tree_tokens = torch.zeros(1, size)
-    pos_idx = torch.zeros(1, size)
+    size = len(nodes)
+    draft_tree_tokens = torch.zeros((1, size), dtype=torch.long, device=logits.device)
+    pos_idx = torch.zeros((1, size), dtype=torch.long, device=logits.device)
 
     for idx in range(size):
-        draft_tree_tokens[0,idx] = nodes[idx]["token_id"]
+        draft_tree_tokens[0, idx] = nodes[idx]["token_id"]
         pos_idx[0, idx] = cur_gen_idx + nodes[idx]["depth"]
 
     attn_mask = torch.full(
-        size=(size, past_kv_len + size),
-        fill_value=-float('inf')
+        size=(1, 1, size, past_kv_len + size),
+        fill_value=-float('inf'),
+        device=logits.device
     )
     attn_mask[:, :, :, :past_kv_len] = 0.0
 
     for i in range(size):
         cur_node = nodes[i]
         while cur_node is not None:
-            attn_mask[0, 0, i, past_kv_len+cur_node["node_idx"]] = 0.0
+            attn_mask[0, 0, i, past_kv_len + cur_node["node_idx"]] = 0.0
             cur_node = nodes[cur_node["parent_idx"]] if cur_node["parent_idx"] is not None else None
 
     return {
         "tokens": draft_tree_tokens,
         "attention": attn_mask,
         "pos_idx": pos_idx,
-        "paths": paths,
+        "paths": valid_tree_choice,
         "nodes": nodes
     }
 
@@ -222,6 +237,7 @@ def speculative_decode(
     input_ids,
     mode: Literal["greedy", "sample"],
     medusa: nn.Module | None,
+    num_heads:int,
     max_new_tokens=128,
     tree_choices: str | list[list] = "Standard",
     top_k=0,
@@ -242,7 +258,7 @@ def speculative_decode(
         device = next(target_model.parameters()).device
 
     if medusa is None:
-        medusa = madusa.madusa(base_model=target_model)
+        medusa = madusa.madusa(base_model=target_model,num_heads=num_heads)
 
     if isinstance(tree_choices, str):
         tree_choices = default_tree(tree_choices)
