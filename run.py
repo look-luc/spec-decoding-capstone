@@ -14,6 +14,8 @@ from typing import Mapping
 import wandb
 from tqdm import tqdm
 
+from src.models.eagle import EagleModule
+
 '''
 Imports from within src folder
 '''
@@ -94,9 +96,19 @@ def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
         )
     elif config.draft_model_type == "eagle":
         logger.info(f"Loading draft model: {config.draft_model}...")
-        draft_model, draft_tokenizer = load_model(
+        eagle_checkpoint, draft_tokenizer = load_model(
             config.draft_model, device=config.device
         )
+
+        draft_model = EagleModule(
+            vocab_size=target_model.config.vocab_size,
+            embed_dim=target_model.config.hidden_size,
+            hidden_dim=target_model.config.hidden_size,
+            num_heads=config.num_heads
+        ).to(config.device)
+
+        draft_model.load_state_dict(eagle_checkpoint)
+
     elif config.draft_model_type == "ngram":
         draft_tokenizer = target_tokenizer
         draft_model = NGramModel(n=config.ngram_n, tokenizer=draft_tokenizer, vocab_size=target_model.config.vocab_size)

@@ -95,40 +95,23 @@ def get_kv_cache_length(past_key_values) -> int:
             return past_key_values[0][0].size(-1)
     return 0
 
-def default_tree(preset_type:str):
-    if preset_type.lower() not in ["lightweight", "greedy_linear", "standard"]:
-        raise ValueError("Must be one of the following options: ['lightweight', 'greedy_linear', 'standard']")
-    if preset_type.lower() == "lightweight":
-        """
-        16-node tree focused on high-probability top-1/top-2 branches
-        Reduces significantly matrix multiplication sizes and tree-attention mask generation overhead during the verification step.
-        Ideal for memory-constrained devices or edge deployment.
-        """
+def default_tree(preset_type: str, num_heads: int = 4):
+    preset_type = preset_type.lower()
+    if preset_type not in ["lightweight", "greedy_linear", "standard", "deep_linear"]:
+        raise ValueError(f"Unknown preset: {preset_type}")
+
+    if preset_type == "greedy_linear" or preset_type == "deep_linear":
+        return [[0] * (depth + 1) for depth in range(num_heads)]
+
+    if preset_type == "lightweight":
         return [
             [0], [0, 0], [0, 0, 0], [0, 0, 0, 0],
             [1], [0, 1], [1, 0], [0, 0, 1],
             [2], [0, 2], [2, 0], [0, 1, 0],
             [3], [0, 0, 2], [1, 1], [0, 0, 0, 1]
         ]
-    elif preset_type.lower() == "greedy_linear":
-        """
-        Minimal single-path execution without branching
-        Simplest memory footprint; eliminates complex 2D branching logic and minimizes KV
-        cache slicing operations.
-        """
+    elif preset_type == "standard":
         return [
-            [0],
-            [0, 0],
-            [0, 0, 0],
-            [0, 0, 0, 0]
-        ]
-    elif preset_type.lower() == "standard":
-        """
-        Standard 64-Node Tree
-        Maximizes the expected token acceptance per iteration rate; explores a diverse range
-        of branches across up to 4 Medusa heads.
-        """
-        return[
             [0], [0, 0], [1], [0, 1], [2], [0, 0, 0], [1, 0], [0, 2], [3], [0, 3],
             [4], [0, 4], [2, 0], [0, 5], [0, 0, 1], [5], [0, 6], [6], [0, 7], [0, 1, 0],
             [1, 1], [7], [0, 8], [0, 0, 2], [3, 0], [0, 9], [8], [9], [1, 0, 0], [0, 2, 0],
@@ -258,10 +241,10 @@ def speculative_decode(
         device = next(target_model.parameters()).device
 
     if medusa is None:
-        medusa = madusa.madusa(base_model=target_model,num_heads=num_heads)
+        medusa = madusa.madusa(base_model=target_model, num_heads=num_heads)
 
     if isinstance(tree_choices, str):
-        tree_choices = default_tree(tree_choices)
+        tree_choices = default_tree(tree_choices, num_heads=num_heads)
 
     def apply_filters(logprobs: torch.Tensor) -> torch.Tensor:
         return filter_logprobs(logprobs, top_k=top_k, top_p=top_p)

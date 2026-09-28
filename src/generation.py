@@ -56,13 +56,16 @@ def generate_output(
         decoded = cast(str, decoded).strip()
         return decoded, metrics
     if isinstance(draft_model, madusa) or config.draft_model_type.lower() == "medusa":
+        num_heads = config.num_heads
         output_ids, metrics = madusa_spec(
             target_model=model,
-            medusa=madusa(config.draft_model),
+            medusa=draft_model,
             tokenizer=tokenizer,
             input_ids=inputs["input_ids"],
             mode=config.decoding_mode,
+            num_heads=num_heads,
             max_new_tokens=config.max_new_tokens,
+            tree_choices=getattr(config, "tree_choices", "greedy_linear"),
             device=inputs["input_ids"].device,
         )
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
@@ -70,12 +73,16 @@ def generate_output(
     if isinstance(draft_model, EagleModule) or config.draft_model_type.lower() == "eagle":
         output_ids, metrics = spec_decode_eagle(
             target_model=model,
-            eagle_module=None,
+            eagle_module=draft_model,
             tokenizer=tokenizer,
-            input_ids=inputs["input_ids"],
+            input_ids=inputs,
             mode=config.decoding_mode,
             max_new_tokens=config.max_new_tokens,
-            device=inputs["input_ids"].device,
+            tree_choices=config.tree_choices,
+            top_k=config.top_k,
+            top_p=config.top_p,
+            repetition_penalty=config.repetition_penalty,
+            device=config.device
         )
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         return cast(str, decoded).strip(), metrics

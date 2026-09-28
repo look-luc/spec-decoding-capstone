@@ -3,8 +3,6 @@ from typing import Literal, cast
 
 import torch
 
-from src.models.eagle import EagleModule
-
 
 def get_stop_token_ids(tokenizer, eos_token_id=None):
     """
@@ -203,7 +201,7 @@ def eagle_draft_tree_expansion(
     eagle_module,
     root_hidden,
     root_token_id,
-    tree_choices,
+    tree_choices:list[int],
     top_k,
     top_p,
     repetition_penalty,
@@ -283,7 +281,7 @@ def spec_decode_eagle(
     input_ids: torch.Tensor,
     mode: Literal["greedy", "sample"],
     max_new_tokens: int = 128,
-    tree_choices:list[int]|None=None,
+    tree_choices:str|None=None,
     top_k: int = 0,
     top_p: float = 0.0,
     repetition_penalty: float = 1.1,
@@ -340,8 +338,16 @@ def spec_decode_eagle(
     if device is None:
         device = next(target_model.parameters()).device
 
-    if tree_choices is None:
-        tree_choices = [1,4,2,2]
+    tree_choices_arr = []
+    if tree_choices.lower() == "eagle_1" or tree_choices.lower() == "eagle-1" or tree_choices.lower() == "eagle 1":
+        tree_choices_arr = [1,4,2,2]
+    elif tree_choices.lower() == "eagle_2" or tree_choices.lower() == "eagle-2" or tree_choices.lower() == "eagle 2":
+        tree_choices_arr = [1, 8, 4, 2]
+    elif tree_choices.lower() == "custom":
+        tree_choices_arr = [1, 4, 2, 3]
+    else:
+        raise ValueError("Either EAGLE-1 or EAGLE-2")
+
     if eagle_module is None:
         eagle_module = EagleModule(
             vocab_size=target_model.config.vocab_size,
@@ -412,7 +418,7 @@ def spec_decode_eagle(
     total_matched_tokens = 0
     num_iterations = 0
 
-    max_depth = len(tree_choices)
+    max_depth = len(tree_choices_arr)
     per_position_draft_count = [0] * max_depth
     per_position_accept_count = [0] * max_depth
     octile_offsets = list(range(1, max_depth + 1))
@@ -451,7 +457,7 @@ def spec_decode_eagle(
                 eagle_module=eagle_module,
                 root_hidden=last_hidden,
                 root_token_id=curr_token,
-                tree_choices=tree_choices,
+                tree_choices=tree_choices_arr,
                 top_k=top_k,
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,
