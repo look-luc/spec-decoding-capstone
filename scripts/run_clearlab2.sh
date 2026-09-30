@@ -5,7 +5,7 @@
 #SBATCH --mem=8000M
 #SBATCH --time=1:00:00
 #SBATCH --output=../logs/%j.log
-#SBATCH --job-name=specdec
+#SBATCH --job-name=specdec_framework
 #SBATCH --partition=blanca-clearlab2
 #SBATCH --account=blanca-clearlab2
 #SBATCH --qos=blanca-clearlab2

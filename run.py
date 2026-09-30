@@ -217,9 +217,9 @@ def setup_wandb(config: ExperimentConfig):
     if is_spec:
         name = f"{config.language_code}_{draft_short}_g{config.gamma}"
     elif is_medusa:
-        name = f"{config.language_code}_{draft_short}_h{config.num_heads}"
+        name = f"{config.language_code}_{draft_short}_h{config.num_heads}_{config.draft_model_type}"
     elif is_eagle:
-        name = f"{config.language_code}_{draft_short}_h{config.tree_choices}"
+        name = f"{config.language_code}_{draft_short}_h{config.tree_choices}_{config.draft_model_type}"
     else:
         name = f"{config.language_code}_baseline"
 
