@@ -14,6 +14,7 @@ class ExperimentConfig:
     draft_model: str | None
     draft_model_type: Literal["none", "neural", "ngram", "medusa", "eagle", "multitoken"]
     decoding_mode: Literal["greedy", "sample"]
+    num_heads: int
     top_k: int = 0
     top_p: float = 0.0
 
@@ -101,9 +102,10 @@ class EagleConfig:
     task: Literal['general', 'translation']
     target_model: str|None
     draft_model: str
+    num_heads: int
     target_model_type: str
     language_code: str
-    tree_choices: list[int]
+    tree_choices: list[int]|str
 
     draft_model_type: Literal["none", "neural", "ngram", "medusa", "eagle", "multitoken"]
 

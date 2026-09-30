@@ -8,12 +8,12 @@ import datasets
 import torch
 import torch.optim as optim
 import wandb
-from madusa import madusa
 from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from src.config.config import WANDB_ENTITY, MadusaConfig
+from src.models.madusa import madusa
 from src.utils import load_model
 
 logger = logging.getLogger(__name__)
