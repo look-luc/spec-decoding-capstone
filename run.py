@@ -95,8 +95,8 @@ def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
             draft_tokenizer = target_tokenizer
     elif config.draft_model_type == "medusa":
         logger.info(f"Initializing Medusa model with {config.num_heads} heads...")
-        draft_model = madusa(base_model=target_model, num_heads=config.num_heads)\
-            .to(config.device) if config.device is not None else "cuda" if torch.cuda.is_available() else "cpu"
+        device = config.device if config.device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+        draft_model = madusa(base_model=target_model, num_heads=config.num_heads).to(device)
         draft_tokenizer = target_tokenizer
 
         checkpoint_path = config.draft_model
