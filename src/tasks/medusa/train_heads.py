@@ -133,6 +133,7 @@ def run_medusa_training(config: MadusaConfig):
 
     assert config.dataset_path
     dataset = datasets.Dataset.from_parquet(config.dataset_path)
+    dataset.set_format(type="torch", columns=["token_ids", "logprobs", "logprobs_vocab_idx"])
     assert isinstance(dataset, datasets.Dataset)
     # There's a few one-token samples which we can't use for training
     dataset = dataset.filter(lambda r: len(r['logprobs']) > 0)
@@ -190,6 +191,7 @@ def run_medusa_training(config: MadusaConfig):
         shuffle=True,
         pin_memory=(device.type == "cuda"),
         collate_fn=collate_fn,
+        num_workers=2
     )
     eval_dataloader = DataLoader(
         eval_dataset,  # type: ignore[arg-type]
@@ -197,6 +199,7 @@ def run_medusa_training(config: MadusaConfig):
         shuffle=False,
         pin_memory=(device.type == "cuda"),
         collate_fn=collate_fn,
+        num_workers=2
     )
     no_decay = {"bias", "LayerNorm.weight", "layernorm.weight"}
     param_groups = [

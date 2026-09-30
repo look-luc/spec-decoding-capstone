@@ -27,18 +27,10 @@ class madusa(nn.Module):
 
         self.heads = nn.ModuleList(
             [
-                self.medusa_heads(self.hidden_size, self.vocab_size)
+                medusa_heads(self.hidden_size, self.vocab_size)
                 for _ in range(num_heads)
             ]
         )
-
-    @property
-    def config(self):
-        return self.base_model.config
-
-    @property
-    def vocab_size(self):
-        return self.base_model.config.vocab_size
 
     @property
     def dtype(self):
