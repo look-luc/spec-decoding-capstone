@@ -22,6 +22,8 @@ class ExperimentConfig:
     top_k: int = 0
     top_p: float = 0.0
 
+    learning_rate: float|None = None
+
     repetition_penalty: float = 1.1
     repetition_penalty_window: int = 16
 
