@@ -68,7 +68,6 @@ class MadusaConfig:
     draft_model_type: Literal["medusa","madusa"]
 
     # SeqKD dataset — HF dataset ID or local path with teacher logits, created with generate_
-    dataset_path: str | None = None
     max_samples: int = 6000
     max_samples_mono: int = 20000
     eval_split_ratio: float = 0.05
