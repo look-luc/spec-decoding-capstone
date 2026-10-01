@@ -33,7 +33,7 @@ def build_repo_name(config: MadusaConfig) -> str:
 
 def setup_wandb(config: MadusaConfig):
     """Initialize wandb for distillation run tracking."""
-    model_short = _model_short_name(config.model)
+    model_short = _model_short_name(config.draft_model)
 
     group = f"distill_{model_short}__{config.language_code}"
 
