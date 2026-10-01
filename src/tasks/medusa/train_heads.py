@@ -42,9 +42,9 @@ def setup_wandb(config: MadusaConfig):
         config.language_code,
         config.task,
         model_short,
-        f"lr={config.learning_rate}",
+        f"lr={1e-4}",
         f"steps={config.max_steps}",
-        f"ga={config.grad_accum_steps}",
+        f"ga={16}",
     ]
 
     run = wandb.init(
@@ -127,7 +127,7 @@ def run_medusa_training(config: MadusaConfig):
     medusa_model = madusa(model, num_heads=config.num_heads)
 
     optimizer =optim.AdamW(
-        medusa_model.heads.parameters(), lr=config.learning_rate
+        medusa_model.heads.parameters(), lr=1e-4
     )
     device = next(medusa_model.parameters()).device
 
@@ -212,7 +212,7 @@ def run_medusa_training(config: MadusaConfig):
             "weight_decay": 0.0,
         },
     ]
-    optimizer = optim.AdamW(param_groups, lr=config.learning_rate)
+    optimizer = optim.AdamW(param_groups, lr=1e-4)
     scheduler = _build_scheduler(optimizer, config)
     start_step = _restore_training_state(config, optimizer, scheduler, device)
 
@@ -244,12 +244,12 @@ def run_medusa_training(config: MadusaConfig):
                 accum_count = 0
                 continue
 
-            scaler.scale(loss / config.grad_accum_steps).backward()
+            scaler.scale(loss / 16).backward()
             accum_count += 1
             log_accum_loss += loss.item()
             log_micro_count += 1
 
-            if accum_count < config.grad_accum_steps:
+            if accum_count < 16:
                 continue
 
             # Optimizer step (this is one "step")

@@ -71,6 +71,7 @@ class MadusaConfig:
     dataset_path: str | None = None
     max_samples: int = 6000
     max_samples_mono: int = 20000
+    eval_split_ratio: float = 0.05
     top_k: int = 0
 
     # Training
@@ -116,7 +117,7 @@ class EagleConfig:
 
     # Training
     max_steps: int = 3000
-    batch_size: int = 4
+    batch_size = 36
     grad_accum_steps: int = 8
     learning_rate: float = 5e-5
     weight_decay: float = 0.01
