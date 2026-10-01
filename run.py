@@ -98,7 +98,7 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
         else:
             draft_model = target_model
             draft_tokenizer = target_tokenizer
-    elif config.draft_model_type == "medusa":
+    elif config.draft_model_type == "medusa" and getattr(MedusaConfig, "__dataclass_fields__", object):
         logger.info(f"Initializing Medusa model with {config.num_heads} heads...")
         device = config.device if config.device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
         if config.target_model is None:

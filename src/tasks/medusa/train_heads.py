@@ -3,6 +3,7 @@ import math
 import os
 import time
 from dataclasses import asdict
+from typing import Any
 
 import datasets
 import torch
@@ -126,25 +127,29 @@ def _compute_eval_loss(student, eval_dataloader, device) -> float:
     student.train()
     return total_loss / max(count, 1)
 
-def run_medusa_training(config: MedusaConfig):
-    os.makedirs(config.output_dir, exist_ok=True)
-    logger.info(f"Loading model: {config.target_model}")
+def run_medusa_training(config: Any):
+    # Safely extract inner MedusaConfig if passed a top-level ExperimentConfig
+    cfg = getattr(config, "medusa", config)
 
-    model, tokenizer = load_model(config.target_model, device=config.device)
-    medusa_model = madusa(model, num_heads=config.num_heads)
+    output_dir = getattr(cfg, "output_dir", getattr(config, "output_dir", "./output"))
+    os.makedirs(output_dir, exist_ok=True)
+    logger.info(f"Loading model: {cfg.target_model}")
+
+    model, tokenizer = load_model(cfg.target_model, device=cfg.device)
+    medusa_model = madusa(model, num_heads=cfg.num_heads)
     device = next(medusa_model.parameters()).device
 
-    assert config.dataset_path
-    dataset = datasets.Dataset.from_parquet(config.dataset_path)
+    assert cfg.dataset_path
+    dataset = datasets.Dataset.from_parquet(cfg.dataset_path)
     dataset.set_format(type="torch", columns=["token_ids", "logprobs", "logprobs_vocab_idx"])
     assert isinstance(dataset, datasets.Dataset)
     dataset = dataset.filter(lambda r: len(r['logprobs']) > 0)
-    repo_name = build_repo_name(config)
+    repo_name = build_repo_name(cfg)
     logger.info(f"HF repo: {repo_name}")
 
-    if config.eval_split_ratio > 0 and len(dataset) > 1:
+    if cfg.eval_split_ratio > 0 and len(dataset) > 1:
         split = dataset.train_test_split(
-            test_size=config.eval_split_ratio, seed=42,
+            test_size=cfg.eval_split_ratio, seed=42,
         )
         train_dataset = split["train"]
         eval_dataset = split["test"]
@@ -185,7 +190,7 @@ def run_medusa_training(config: MedusaConfig):
 
     dataloader = DataLoader(
         train_dataset,  # type: ignore[arg-type]
-        batch_size=config.batch_size,
+        batch_size=cfg.batch_size,
         shuffle=True,
         pin_memory=(device.type == "cuda"),
         collate_fn=collate_fn,
@@ -193,7 +198,7 @@ def run_medusa_training(config: MedusaConfig):
     )
     eval_dataloader = DataLoader(
         eval_dataset,  # type: ignore[arg-type]
-        batch_size=config.batch_size,
+        batch_size=cfg.batch_size,
         shuffle=False,
         pin_memory=(device.type == "cuda"),
         collate_fn=collate_fn,
@@ -204,7 +209,7 @@ def run_medusa_training(config: MedusaConfig):
     param_groups = [
         {
             "params": [p for n, p in medusa_model.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": config.weight_decay,
+            "weight_decay": cfg.weight_decay,
         },
         {
             "params": [p for n, p in medusa_model.named_parameters() if any(nd in n for nd in no_decay)],
@@ -212,16 +217,15 @@ def run_medusa_training(config: MedusaConfig):
         },
     ]
 
-    # Uses learning_rate specified in MedusaConfig
-    optimizer = optim.AdamW(param_groups, lr=config.learning_rate)
-    scheduler = _build_scheduler(optimizer, config)
-    start_step = _restore_training_state(config, optimizer, scheduler, device)
+    optimizer = optim.AdamW(param_groups, lr=cfg.learning_rate)
+    scheduler = _build_scheduler(optimizer, cfg)
+    start_step = _restore_training_state(cfg, optimizer, scheduler, device)
 
     use_scaler = device.type == "cuda" and medusa_model.dtype == torch.float16
     scaler = GradScaler(device.type, enabled=use_scaler)
 
     step = start_step
-    target_step = start_step + config.max_steps
+    target_step = start_step + cfg.max_steps
     accum_count = 0
     log_accum_loss = 0.0
     log_micro_count = 0
@@ -243,13 +247,12 @@ def run_medusa_training(config: MedusaConfig):
                 accum_count = 0
                 continue
 
-            # Scale loss by grad_accum_steps from config
-            scaler.scale(loss / config.grad_accum_steps).backward()
+            scaler.scale(loss / cfg.grad_accum_steps).backward()
             accum_count += 1
             log_accum_loss += loss.item()
             log_micro_count += 1
 
-            if accum_count < config.grad_accum_steps:
+            if accum_count < cfg.grad_accum_steps:
                 continue
 
             scaler.unscale_(optimizer)
@@ -262,7 +265,7 @@ def run_medusa_training(config: MedusaConfig):
             accum_count = 0
             step += 1
 
-            if step % config.log_every == 0 and log_micro_count > 0:
+            if step % cfg.log_every == 0 and log_micro_count > 0:
                 avg_loss = log_accum_loss / log_micro_count
                 current_lr = scheduler.get_last_lr()[0]
                 elapsed = time.time() - start_time
@@ -281,14 +284,14 @@ def run_medusa_training(config: MedusaConfig):
                 log_micro_count = 0
                 start_time = time.time()
 
-            if step % config.eval_every == 0 and len(eval_dataset) > 0:
+            if step % cfg.eval_every == 0 and len(eval_dataset) > 0:
                 eval_loss = _compute_eval_loss(medusa_model, eval_dataloader, device)
                 logger.info(f"Step {step} | Eval loss: {eval_loss:.4f}")
                 wandb.log({"eval/loss": eval_loss, "step": step})
                 if eval_loss < best_eval_loss:
                     best_eval_loss = eval_loss
                     _save_checkpoint(
-                        medusa_model, tokenizer, optimizer, config.output_dir, "best", repo_name,
+                        medusa_model, tokenizer, optimizer, cfg.output_dir, "best", repo_name,
                         push_to_hub=False, scheduler=scheduler,
                     )
 
@@ -301,16 +304,16 @@ def run_medusa_training(config: MedusaConfig):
 
     wandb.log({"eval/best_loss": best_eval_loss})
 
-    if config.hf_repo_id:
+    if cfg.hf_repo_id:
         logger.info(f"Training complete! Pushing final model to HF Hub: {repo_name}")
     else:
         logger.info("Training complete! Saving final checkpoint locally (HF Hub push disabled).")
     _save_checkpoint(
-        medusa_model, tokenizer, optimizer, config.output_dir, "final", repo_name,
-        push_to_hub=bool(config.hf_repo_id), scheduler=scheduler,
+        medusa_model, tokenizer, optimizer, cfg.output_dir, "final", repo_name,
+        push_to_hub=bool(cfg.hf_repo_id), scheduler=scheduler,
     )
     wandb.finish()
-    save_medusa_weights(medusa_model, config.output_dir, "medusa_heads.pt")
+    save_medusa_weights(medusa_model, cfg.output_dir, "medusa_heads.pt")
 
 
 def save_medusa_weights(medusa_model, output_dir: str, filename: str = "medusa_heads.pt"):
