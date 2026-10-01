@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 WANDB_PROJECT = "speculative decoding v2"
 WANDB_ENTITY = "lecs-general"
