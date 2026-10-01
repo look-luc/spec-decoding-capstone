@@ -33,28 +33,32 @@ def build_repo_name(config: MedusaConfig) -> str:
     return name
 
 
-def setup_wandb(config: MedusaConfig):
+def setup_wandb(config):
     """Initialize wandb for distillation run tracking."""
-    model_short = _model_short_name(config.draft_model or config.target_model)
+    # Unpack MedusaConfig if wrapped inside ExperimentConfig
+    medusa_cfg = getattr(config, "medusa", config)
 
-    group = f"distill_{model_short}__{config.language_code}"
+    model_short = _model_short_name(
+        getattr(medusa_cfg, "draft_model", None) or getattr(medusa_cfg, "target_model", None)
+    )
+    group = f"distill_{model_short}__{getattr(medusa_cfg, 'language_code', 'default')}"
 
     tags = [
         "distillation",
-        config.language_code,
-        config.task,
+        getattr(medusa_cfg, "language_code", "default"),
+        getattr(medusa_cfg, "task", "medusa"),
         model_short,
-        f"lr={config.learning_rate}",
-        f"steps={config.max_steps}",
-        f"ga={config.grad_accum_steps}",
+        f"lr={getattr(medusa_cfg, 'learning_rate', 1e-4)}",
+        f"steps={getattr(medusa_cfg, 'max_steps', getattr(config, 'max_steps', 1000))}",
+        f"ga={getattr(medusa_cfg, 'grad_accum_steps', 1)}",
     ]
 
     run = wandb.init(
-        project=config.wandb_project,
+        project=getattr(medusa_cfg, "wandb_project", "spec-decoding"),
         entity=WANDB_ENTITY,
-        config=asdict(config),
+        config=asdict(config) if hasattr(config, "__dataclass_fields__") else config,
         group=group,
-        job_type=f"distill-{config.task}",
+        job_type=f"distill-{getattr(medusa_cfg, 'task', 'medusa')}",
         tags=tags,
     )
     wandb.define_metric("step")

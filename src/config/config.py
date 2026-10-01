@@ -33,6 +33,7 @@ class ExperimentConfig:
     ngram_n: int = 2
 
     use_hf_assisted: bool = False
+    max_steps: int = 3000
     hf_schedule: Literal["heuristic", "constant"] | None = None
 
     max_samples: int = DEFAULT_MAX_BI
