@@ -106,6 +106,22 @@ class MedusaConfig:
 
         if self.target_model_type == 'medusa':
             assert self.num_heads > 0
+    @classmethod
+    def from_experiment_config(cls, exp_cfg: Any) -> "MedusaConfig":
+        if hasattr(exp_cfg, "medusa") and isinstance(exp_cfg.medusa, cls):
+            return exp_cfg.medusa
+
+        return cls(
+            language_code=getattr(exp_cfg, "language_code","ber"),
+            draft_model=getattr(exp_cfg, "draft_model", getattr(exp_cfg, "model_name", "")),
+            target_model=getattr(exp_cfg, "target_model", getattr(exp_cfg, "model_name", "")),
+            dataset_path=getattr(exp_cfg, "dataset_path", getattr(exp_cfg, "data_path", "")),
+            output_dir=getattr(exp_cfg, "output_dir", "./output"),
+            max_steps=getattr(exp_cfg, "max_steps", 1000),
+            batch_size=getattr(exp_cfg, "batch_size", 4),
+            learning_rate=getattr(exp_cfg, "learning_rate", 5e-5),
+            task=getattr(exp_cfg, "task")
+            )
 
 
 @dataclass
