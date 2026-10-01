@@ -12,28 +12,30 @@ from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
-from src.config.config import WANDB_ENTITY, MadusaConfig
+from src.config.config import WANDB_ENTITY, MedusaConfig
 from src.models.madusa import madusa
 from src.utils import load_model
 
 logger = logging.getLogger(__name__)
 
 
-def _model_short_name(model_id: str) -> str:
+def _model_short_name(model_id: str | None) -> str:
+    if not model_id:
+        return "none"
     return model_id.split("/")[-1]
 
 
-def build_repo_name(config: MadusaConfig) -> str:
-    model = _model_short_name(config.model)
+def build_repo_name(config: MedusaConfig) -> str:
+    model = _model_short_name(config.target_model)
     name = f"{config.language_code}-{config.task}-{model}"
     if config.hf_repo_id:
         return f"{config.hf_repo_id}/{name}"
     return name
 
 
-def setup_wandb(config: MadusaConfig):
+def setup_wandb(config: MedusaConfig):
     """Initialize wandb for distillation run tracking."""
-    model_short = _model_short_name(config.draft_model)
+    model_short = _model_short_name(config.draft_model or config.target_model)
 
     group = f"distill_{model_short}__{config.language_code}"
 
@@ -42,9 +44,9 @@ def setup_wandb(config: MadusaConfig):
         config.language_code,
         config.task,
         model_short,
-        f"lr={1e-4}",
+        f"lr={config.learning_rate}",
         f"steps={config.max_steps}",
-        f"ga={16}",
+        f"ga={config.grad_accum_steps}",
     ]
 
     run = wandb.init(
@@ -61,7 +63,7 @@ def setup_wandb(config: MadusaConfig):
     return run
 
 
-def _build_scheduler(optimizer, config: MadusaConfig) -> LambdaLR:
+def _build_scheduler(optimizer, config: MedusaConfig) -> LambdaLR:
     """Build LR scheduler with linear warmup then cosine/linear/constant decay."""
     warmup_steps = max(1, int(config.max_steps * config.warmup_ratio))
 
@@ -95,16 +97,17 @@ def compute_loss(madusa_model, batch, device) -> torch.Tensor:
                 dim=-1
             )
             target_logprobs = batch["topk_logprobs"][:, (k+1):, :]
-            target_indices = batch["topk_logprobs"][:, (k + 1):, :]
+            target_indices = batch["topk_logprobs_indices"][:, (k + 1):, :]
             mask = batch["label_mask"][:, (k + 1):, :]
 
             model_logprobs = logprobs.gather(dim=-1, index=target_indices)
 
             head_loss = -(torch.exp(target_logprobs) * model_logprobs).sum(-1)
-            weighted_loss = (head_loss*mask).sum() / max(mask.sum(), 1)
+            weighted_loss = (head_loss * mask).sum() / max(mask.sum(), 1)
 
             total_loss += weighted_loss
     return total_loss / len(medusa_logits)
+
 
 @torch.no_grad()
 def _compute_eval_loss(student, eval_dataloader, device) -> float:
@@ -119,28 +122,22 @@ def _compute_eval_loss(student, eval_dataloader, device) -> float:
     student.train()
     return total_loss / max(count, 1)
 
-def run_medusa_training(config: MadusaConfig):
+def run_medusa_training(config: MedusaConfig):
     os.makedirs(config.output_dir, exist_ok=True)
     logger.info(f"Loading model: {config.target_model}")
 
-    model,tokenizer = load_model(config.target_model, device=config.device)
+    model, tokenizer = load_model(config.target_model, device=config.device)
     medusa_model = madusa(model, num_heads=config.num_heads)
-
-    optimizer =optim.AdamW(
-        medusa_model.heads.parameters(), lr=1e-4
-    )
     device = next(medusa_model.parameters()).device
 
     assert config.dataset_path
     dataset = datasets.Dataset.from_parquet(config.dataset_path)
     dataset.set_format(type="torch", columns=["token_ids", "logprobs", "logprobs_vocab_idx"])
     assert isinstance(dataset, datasets.Dataset)
-    # There's a few one-token samples which we can't use for training
     dataset = dataset.filter(lambda r: len(r['logprobs']) > 0)
     repo_name = build_repo_name(config)
     logger.info(f"HF repo: {repo_name}")
 
-    # Train / eval split (randomized, seeded for reproducibility).
     if config.eval_split_ratio > 0 and len(dataset) > 1:
         split = dataset.train_test_split(
             test_size=config.eval_split_ratio, seed=42,
@@ -155,18 +152,15 @@ def run_medusa_training(config: MadusaConfig):
     )
 
     def collate_fn(batch):
-        # Build input IDs and full logits
         bs = len(batch)
         seq_len = max([len(r["token_ids"]) for r in batch])
         topk = len(batch[0]["logprobs"][0])
 
         input_ids = torch.full((bs, seq_len), tokenizer.pad_token_id, dtype=torch.long)
         attention_mask = torch.zeros((bs, seq_len), dtype=torch.long)
-        # Avoid materializing these as full vocab dim
-        # Note: shifted on seq dim (first item is logprobs for second token)
         topk_logprobs = torch.zeros((bs, seq_len - 1, topk), dtype=medusa_model.dtype)
         topk_logprobs_indices = torch.zeros((bs, seq_len - 1, topk), dtype=torch.long)
-        label_mask = torch.zeros((bs, seq_len - 1), dtype=medusa_model.dtype) # Mask positions that shouldn't be trained
+        label_mask = torch.zeros((bs, seq_len - 1), dtype=medusa_model.dtype)
 
         for idx in range(bs):
             item_seq_len = len(batch[idx]["token_ids"])
@@ -201,6 +195,7 @@ def run_medusa_training(config: MadusaConfig):
         collate_fn=collate_fn,
         num_workers=2
     )
+
     no_decay = {"bias", "LayerNorm.weight", "layernorm.weight"}
     param_groups = [
         {
@@ -212,15 +207,15 @@ def run_medusa_training(config: MadusaConfig):
             "weight_decay": 0.0,
         },
     ]
-    optimizer = optim.AdamW(param_groups, lr=1e-4)
+
+    # Uses learning_rate specified in MedusaConfig
+    optimizer = optim.AdamW(param_groups, lr=config.learning_rate)
     scheduler = _build_scheduler(optimizer, config)
     start_step = _restore_training_state(config, optimizer, scheduler, device)
 
-    # AMP scaler (only needed for float16, not bfloat16)
     use_scaler = device.type == "cuda" and medusa_model.dtype == torch.float16
     scaler = GradScaler(device.type, enabled=use_scaler)
 
-    # Training loop
     step = start_step
     target_step = start_step + config.max_steps
     accum_count = 0
@@ -244,15 +239,15 @@ def run_medusa_training(config: MadusaConfig):
                 accum_count = 0
                 continue
 
-            scaler.scale(loss / 16).backward()
+            # Scale loss by grad_accum_steps from config
+            scaler.scale(loss / config.grad_accum_steps).backward()
             accum_count += 1
             log_accum_loss += loss.item()
             log_micro_count += 1
 
-            if accum_count < 16:
+            if accum_count < config.grad_accum_steps:
                 continue
 
-            # Optimizer step (this is one "step")
             scaler.unscale_(optimizer)
             unclipped_grad_norm = grad_norm(medusa_model)
             torch.nn.utils.clip_grad_norm_(medusa_model.parameters(), 1.0)
@@ -313,12 +308,12 @@ def run_medusa_training(config: MadusaConfig):
     wandb.finish()
     save_medusa_weights(medusa_model, config.output_dir, "medusa_heads.pt")
 
+
 def save_medusa_weights(medusa_model, output_dir: str, filename: str = "medusa_heads.pt"):
     """Saves only the trainable Medusa projection heads."""
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, filename)
 
-    # Extract only the medusa heads parameters
     if hasattr(medusa_model, "heads"):
         state_dict = medusa_model.heads.state_dict()
     else:
@@ -327,7 +322,8 @@ def save_medusa_weights(medusa_model, output_dir: str, filename: str = "medusa_h
     torch.save(state_dict, save_path)
     logger.info(f"Saved Medusa head weights to: {save_path}")
 
-def _restore_training_state(config: MadusaConfig, optimizer, scheduler, device) -> int:
+
+def _restore_training_state(config: MedusaConfig, optimizer, scheduler, device) -> int:
     """Restore optimizer and scheduler state from checkpoint; return starting step."""
     start_step = 0
     if config.resume_from:
@@ -354,10 +350,11 @@ def _restore_training_state(config: MadusaConfig, optimizer, scheduler, device) 
                 scheduler.step()
     return start_step
 
+
 def _save_checkpoint(student, tokenizer, optimizer, output_dir, label,
                      repo_name=None, push_to_hub=False, scheduler=None):
     """Save model, tokenizer, optimizer, and scheduler state; optionally push to HF Hub."""
-    run_name = wandb.run.name # type:ignore
+    run_name = wandb.run.name if wandb.run else "medusa-run"
     path = os.path.join(output_dir, f"{run_name}-{label}.ckpt")
     os.makedirs(path, exist_ok=True)
 
@@ -375,11 +372,12 @@ def _save_checkpoint(student, tokenizer, optimizer, output_dir, label,
         tokenizer.push_to_hub(hub_repo, commit_message=f"Tokenizer (step {label})")
         logger.info(f"Pushed: https://huggingface.co/{hub_repo}")
 
+
 def grad_norm(model):
-    # Log grad norm
     grad_norm = 0
     for p in model.parameters():
-        param_norm = p.grad.detach().data.norm(2)
-        grad_norm += param_norm.item() ** 2
+        if p.grad is not None:
+            param_norm = p.grad.detach().data.norm(2)
+            grad_norm += param_norm.item() ** 2
     grad_norm = grad_norm**0.5
     return grad_norm

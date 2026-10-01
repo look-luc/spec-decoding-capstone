@@ -13,9 +13,6 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
-from src.config.config import (  # config functions and key
-    MadusaConfig,
-)
 from src.models import madusa
 
 
