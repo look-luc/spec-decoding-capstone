@@ -100,6 +100,7 @@ class MadusaConfig:
 @dataclass
 class EagleConfig:
     task: Literal['general', 'translation']
+    base_model: str
     target_model: str|None
     draft_model: str
     num_heads: int

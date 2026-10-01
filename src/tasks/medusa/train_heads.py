@@ -121,9 +121,9 @@ def _compute_eval_loss(student, eval_dataloader, device) -> float:
 
 def run_medusa_training(config: MadusaConfig):
     os.makedirs(config.output_dir, exist_ok=True)
-    logger.info(f"Loading model: {config.model}")
+    logger.info(f"Loading model: {config.target_model}")
 
-    model,tokenizer = load_model(config.model, device=config.device)
+    model,tokenizer = load_model(config.target_model, device=config.device)
     medusa_model = madusa(model, num_heads=config.num_heads)
 
     optimizer =optim.AdamW(

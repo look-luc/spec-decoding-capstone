@@ -63,9 +63,14 @@ def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
 
     # 1. Load target model
     logger.info(f"Loading target model: {config.target_model}...")
-    target_model, target_tokenizer = load_model(
-        config.target_model, device=config.device
-    )
+    if config.target_model is None:
+        target_model, target_tokenizer = load_model(
+            config.base_model, device=config.device
+        )
+    else:
+        target_model, target_tokenizer = load_model(
+            config.target_model, device=config.device
+        )
     device = next(target_model.parameters()).device
 
     # 2. Load data
@@ -96,7 +101,7 @@ def run(config: ExperimentConfig|MadusaConfig|EagleConfig):
     elif config.draft_model_type == "medusa":
         logger.info(f"Initializing Medusa model with {config.num_heads} heads...")
         device = config.device if config.device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
-        draft_model = madusa(base_model=target_model, num_heads=config.num_heads).to(device)
+        draft_model = madusa(base_model=config.draft_model, num_heads=config.num_heads).to(device)
         draft_tokenizer = target_tokenizer
 
         checkpoint_path = config.draft_model
