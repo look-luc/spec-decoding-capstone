@@ -14,7 +14,7 @@ class ExperimentConfig:
     draft_model: str | None
     draft_model_type: Literal["none", "neural", "ngram", "medusa", "eagle", "multitoken"]
     decoding_mode: Literal["greedy", "sample"]
-    num_heads: int|None = None
+    num_heads: int | None = None
     top_k: int = 0
     top_p: float = 0.0
 
@@ -26,7 +26,7 @@ class ExperimentConfig:
     repetition_penalty_window: int = 16
 
     gamma: int = 5
-    track_iterations: bool = False # If true, will log per-iteration of SD
+    track_iterations: bool = False
 
     ngram_n: int = 2
 
@@ -39,7 +39,6 @@ class ExperimentConfig:
     max_steps: int = 3000
     story_seed: int | None = 0
     output_dir: str = "../distilled_models"
-    wandb_project: str = "spec-dec-distill"
     device: str = "auto"
 
     wandb_tag: str | None = None
@@ -56,28 +55,26 @@ class ExperimentConfig:
         if isinstance(self.story_seed, str):
             self.story_seed = None if self.story_seed == "None" else int(self.story_seed)
 
+
 @dataclass
-class MadusaConfig:
+class MedusaConfig:
     task: Literal['general', 'translation']
     target_model: str
-    draft_model: str|None
+    draft_model: str | None
     target_model_type: str
     language_code: str
     num_heads: int
 
-    draft_model_type: Literal["medusa","madusa"]
+    draft_model_type: Literal["medusa", "madusa"]
 
-    # SeqKD dataset — HF dataset ID or local path with teacher logits, created with generate_
     max_samples: int = 6000
     max_samples_mono: int = 20000
     eval_split_ratio: float = 0.05
     top_k: int = 0
 
-    # Training
     max_steps: int = 3000
     lr_scheduler: Literal["cosine", "linear", "constant"] = "cosine"
 
-    # Checkpointing & output
     output_dir: str = "../distilled_models"
     resume_from: str | None = None
     log_every: int = 5
@@ -93,30 +90,26 @@ class MadusaConfig:
             assert self.num_heads > 0
             assert self.draft_model is not None
 
-        if isinstance(self.story_seed, str):
-            self.story_seed = None if self.story_seed == "None" else int(self.story_seed)
 
 @dataclass
 class EagleConfig:
     task: Literal['general', 'translation']
     base_model: str
-    target_model: str|None
+    target_model: str | None
     draft_model: str
     num_heads: int
     target_model_type: str
     language_code: str
-    tree_choices: list[int]|str
+    tree_choices: list[int] | str
 
     draft_model_type: Literal["none", "neural", "ngram", "medusa", "eagle", "multitoken"]
 
-    # SeqKD dataset — HF dataset ID or local path with teacher logits, created with generate_
     dataset_path: str | None = None
     max_samples: int = 5000
-    top_k: int = 20 # How many teacher logits to keep per token
+    top_k: int = 20
 
-    # Training
     max_steps: int = 3000
-    batch_size = 36
+    batch_size: int = 36  # Fixed missing type annotation
     grad_accum_steps: int = 8
     learning_rate: float = 5e-5
     weight_decay: float = 0.01
@@ -126,7 +119,6 @@ class EagleConfig:
     eval_split_ratio: float = 0.05
     eval_every: int = 50
 
-    # Checkpointing & output
     hf_repo_id: str | None = None
     output_dir: str = "../distilled_models"
     resume_from: str | None = None
@@ -139,8 +131,6 @@ class EagleConfig:
         if self.draft_model == "None":
             self.draft_model = None
 
-        if isinstance(self.story_seed, str):
-            self.story_seed = None if self.story_seed == "None" else int(self.story_seed)
 
 @dataclass
 class DistillConfig:
@@ -149,12 +139,10 @@ class DistillConfig:
     student_model: str
     language_code: str
 
-    # SeqKD dataset — HF dataset ID or local path with teacher logits, created with generate_
     dataset_path: str | None = None
     max_samples: int = 5000
-    top_k: int = 20 # How many teacher logits to keep per token
+    top_k: int = 20
 
-    # Training
     max_steps: int = 3000
     batch_size: int = 4
     grad_accum_steps: int = 8
@@ -166,7 +154,6 @@ class DistillConfig:
     eval_split_ratio: float = 0.05
     eval_every: int = 50
 
-    # Checkpointing & output
     hf_repo_id: str | None = None
     output_dir: str = "../distilled_models"
     resume_from: str | None = None
