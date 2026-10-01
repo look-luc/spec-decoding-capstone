@@ -24,6 +24,9 @@ class ExperimentConfig:
 
     learning_rate: float|None = None
 
+    dataset_path: str | None = None
+    data_path: str | None = None
+
     repetition_penalty: float = 1.1
     repetition_penalty_window: int = 16
 
@@ -108,20 +111,33 @@ class MedusaConfig:
             assert self.num_heads > 0
     @classmethod
     def from_experiment_config(cls, exp_cfg: Any) -> "MedusaConfig":
-        if hasattr(exp_cfg, "medusa") and isinstance(exp_cfg.medusa, cls):
+        if hasattr(exp_cfg, "medusa") and isinstance(exp_cfg.medusa, cls) and exp_cfg.medusa is not None:
             return exp_cfg.medusa
 
+        dataset_path = getattr(exp_cfg, "dataset_path", None) or getattr(exp_cfg, "data_path", None)
+        if dataset_path in ("", "None"):
+            dataset_path = None
+
+        lr = getattr(exp_cfg, "learning_rate", None)
+        if lr is None:
+            lr = 5e-5
+
+        num_heads = getattr(exp_cfg, "num_heads", None)
+        if num_heads is None:
+            num_heads = 4
+
         return cls(
-            language_code=getattr(exp_cfg, "language_code","ber"),
-            draft_model=getattr(exp_cfg, "draft_model", getattr(exp_cfg, "model_name", "")),
-            target_model=getattr(exp_cfg, "target_model", getattr(exp_cfg, "model_name", "")),
-            dataset_path=getattr(exp_cfg, "dataset_path", getattr(exp_cfg, "data_path", "")),
+            task=getattr(exp_cfg, "task", "translation"),
+            language_code=getattr(exp_cfg, "language_code", "ber"),
+            draft_model=getattr(exp_cfg, "draft_model", None),
+            target_model=getattr(exp_cfg, "target_model", ""),
+            dataset_path=dataset_path,
+            num_heads=num_heads,
             output_dir=getattr(exp_cfg, "output_dir", "./output"),
             max_steps=getattr(exp_cfg, "max_steps", 1000),
             batch_size=getattr(exp_cfg, "batch_size", 4),
-            learning_rate=getattr(exp_cfg, "learning_rate", 5e-5),
-            task=getattr(exp_cfg, "task")
-            )
+            learning_rate=lr,
+        )
 
 
 @dataclass
