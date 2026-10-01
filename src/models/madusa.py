@@ -28,7 +28,7 @@ class madusa(nn.Module):
         self.heads = nn.ModuleList(
             [
                 medusa_heads(self.hidden_size, self.vocab_size)
-                for _ in range(num_heads)
+                for _ in range(int(num_heads))
             ]
         )
 

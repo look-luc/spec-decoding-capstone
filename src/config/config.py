@@ -14,9 +14,13 @@ class ExperimentConfig:
     draft_model: str | None
     draft_model_type: Literal["none", "neural", "ngram", "medusa", "eagle", "multitoken"]
     decoding_mode: Literal["greedy", "sample"]
-    num_heads: int
+    num_heads: int|None = None
     top_k: int = 0
     top_p: float = 0.0
+
+    learning_rate: float = 5e-5
+    weight_decay: float = 0.01
+    warmup_ratio: float = 0.06
 
     repetition_penalty: float = 1.1
     repetition_penalty_window: int = 16
@@ -32,7 +36,10 @@ class ExperimentConfig:
     max_samples: int = 6000
     max_samples_mono: int = 20000
     max_new_tokens: int = 128
+    max_steps: int = 3000
     story_seed: int | None = 0
+    output_dir: str = "../distilled_models"
+    wandb_project: str = "spec-dec-distill"
     device: str = "auto"
 
     wandb_tag: str | None = None
@@ -58,27 +65,19 @@ class MadusaConfig:
     language_code: str
     num_heads: int
 
-    draft_model_type: Literal["none", "neural", "ngram", "medusa", "eagle", "multitoken"]
+    draft_model_type: Literal["medusa","madusa"]
 
     # SeqKD dataset — HF dataset ID or local path with teacher logits, created with generate_
     dataset_path: str | None = None
-    max_samples: int = 5000
-    top_k: int = 20 # How many teacher logits to keep per token
+    max_samples: int = 6000
+    max_samples_mono: int = 20000
+    top_k: int = 0
 
     # Training
     max_steps: int = 3000
-    batch_size: int = 4
-    grad_accum_steps: int = 8
-    learning_rate: float = 5e-5
-    weight_decay: float = 0.01
-    warmup_ratio: float = 0.06
     lr_scheduler: Literal["cosine", "linear", "constant"] = "cosine"
-    max_length: int = 128
-    eval_split_ratio: float = 0.05
-    eval_every: int = 50
 
     # Checkpointing & output
-    hf_repo_id: str | None = None
     output_dir: str = "../distilled_models"
     resume_from: str | None = None
     log_every: int = 5
