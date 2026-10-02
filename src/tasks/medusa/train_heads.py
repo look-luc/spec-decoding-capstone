@@ -3,6 +3,7 @@ import math
 import os
 import time
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Literal, cast
 
 import datasets
@@ -12,8 +13,10 @@ import wandb
 from torch.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
+from transformers import AutoTokenizer
 
 from src.config.medusa_config import MedusaConfig
+from src.data.dataset import assemble_dataset, get_language_name
 from src.models.madusa import madusa
 from src.utils import load_model
 
@@ -26,38 +29,51 @@ logger = logging.getLogger(__name__)
 
 TaskType = Literal["translation", "story_gen"]
 
-import os
-
-
 def resolve_dataset_path(config) -> str:
     """
-    Constructs the dataset file path dynamically from config fields.
-    Supports explicitly configured dataset_path if provided,
-    otherwise constructs it based on task, data_source, and language_code.
+    Resolves the dataset path from config or generates it automatically if missing.
     """
-    # If explicitly set in config, respect it
-    if getattr(config, "dataset_path", None):
-        return config.dataset_path
+    # 1. Determine target file path
+    dataset_path = getattr(config, "dataset_path", None)
 
-    # Fallback to dynamic resolution based on config properties
-    data_source = getattr(config, "data_source", "tatoeba")
-    task = getattr(config, "task", "translation")
-    lang = getattr(config, "language_code", "en")
+    if not dataset_path:
+        lang_code = getattr(config, "language_code", "ber")
+        dataset_path = f"data/tatoeba_{lang_code}.jsonl"
 
-    if task == "translation":
-        path = f"data/{data_source}_{lang}.jsonl"
-    elif task == "story_gen":
-        path = f"data/stories_{lang}.jsonl"
-    else:
-        path = f"data/{task}_{lang}.jsonl"
+    # 2. Return path if file already exists
+    if os.path.exists(dataset_path):
+        logger.info(f"Using existing dataset file: {dataset_path}")
+        return dataset_path
 
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"Resolved dataset path '{path}' does not exist. "
-            f"Ensure the dataset file exists or provide 'dataset_path' in your config."
-        )
+    # 3. Automatically build and save dataset if missing
+    logger.warning(f"Dataset path '{dataset_path}' not found. Automatically assembling dataset...")
 
-    return path
+    lang_code = getattr(config, "language_code", "ber")
+    model_name = getattr(config, "model_name_or_path", "Qwen/Qwen3.5-9B")
+    max_samples = getattr(config, "max_samples", 6000)
+    dataset_type = getattr(config, "dataset_type", "bi")  # 'bi' or 'mono'
+
+    # Load tokenizer for token filtration in assemble_dataset
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    # Assemble dataset using src.data.dataset
+    splits = assemble_dataset(
+        lang_code=lang_code,
+        type=dataset_type,
+        tokenizer=tokenizer,
+        max_samples=max_samples,
+    )
+
+    # Ensure output directory exists
+    Path(dataset_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # Export training split to JSONL format
+    train_dataset = splits["train"]
+    train_dataset.to_json(dataset_path, orient="records", lines=True)
+
+    logger.info(f"Successfully generated and saved dataset to '{dataset_path}' ({len(train_dataset)} examples).")
+
+    return dataset_path
 
 
 def _model_short_name(model_name: str | None) -> str:
