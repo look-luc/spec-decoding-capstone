@@ -3,40 +3,55 @@ import torch.nn as nn
 
 
 class medusa_heads(nn.Module):
-    def __init__(self, in_features, out_features) -> None:
+    def __init__(self, in_features: int, out_features: int) -> None:
         super().__init__()
-
         self.linear = nn.Linear(in_features, out_features, bias=False)
 
-    def forward(self, hidden_state):
+    def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
         return self.linear(hidden_state)
 
+
 class madusa(nn.Module):
-    def __init__(self, base_model, num_heads=4) -> None:
+    def __init__(self, base_model: nn.Module, num_heads: int = 4) -> None:
         super().__init__()
         self.base_model = base_model
 
-        try:
-            for param in self.base_model.parameters():
-                param.requires_grad = False
-        except Exception as e:
-            print(f"error raised: {e}")
+        # Freeze base model parameters
+        for param in self.base_model.parameters():
+            param.requires_grad = False
 
         self.hidden_size = self.base_model.config.hidden_size
         self.vocab_size = self.base_model.config.vocab_size
 
+        # Infer dtype and device directly from base_model
+        base_param = next(self.base_model.parameters())
+        target_dtype = base_param.dtype
+        target_device = base_param.device
+
+        # Initialize heads directly on the same device & precision
         self.heads = nn.ModuleList(
             [
-                medusa_heads(self.hidden_size, self.vocab_size)
+                medusa_heads(self.hidden_size, self.vocab_size).to(
+                    device=target_device, dtype=target_dtype
+                )
                 for _ in range(int(num_heads))
             ]
         )
 
     @property
-    def dtype(self):
-        return next(self.parameters()).dtype
+    def dtype(self) -> torch.dtype:
+        return next(self.heads.parameters()).dtype
 
-    def forward(self, input_ids, attention_mask=None, past_key_values=None):
+    @property
+    def device(self) -> torch.device:
+        return next(self.heads.parameters()).device
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        past_key_values: tuple | None = None,
+    ):
         outputs = self.base_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -45,9 +60,6 @@ class madusa(nn.Module):
         )
 
         last_hidden = outputs.hidden_states[-1]
-        medusa_logits = []
-
-        for head in self.heads:
-            medusa_logits.append(head(last_hidden))
+        medusa_logits = [head(last_hidden) for head in self.heads]
 
         return outputs.logits, medusa_logits, outputs.past_key_values
