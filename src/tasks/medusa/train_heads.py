@@ -201,6 +201,7 @@ def run_medusa_training(config: Any):
     model, tokenizer = load_model(cfg.target_model, device=cfg.device)
     medusa_model = madusa(model, num_heads=cfg.num_heads)
     device = torch.device(cfg.device if cfg.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
+    medusa_model.to(device)
 
     dataset_path = getattr(config, "dataset_path", getattr(config, "data_path", getattr(cfg, "dataset_path", None)))
     if not dataset_path or not os.path.exists(dataset_path):

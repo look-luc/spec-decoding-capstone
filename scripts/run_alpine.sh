@@ -1,15 +1,15 @@
 #!/bin/bash
-#SBATCH --gres=gpu:a100_3g.20gb:1
+#SBATCH --partition=ah200
+#SBATCH --qos=gpu-normal
+#SBATCH --gres=gpu:h200:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=32G
-#SBATCH --time=1:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=120G
+#SBATCH --time=02:00:00
 #SBATCH --output=/projects/%u/spec-decoding-capstone/logs/%j.log
-#SBATCH --job-name=specdec_framework
-#SBATCH --partition=aa100
+#SBATCH --job-name=specdec_h200
 #SBATCH --account=ucb-general
-#SBATCH --qos=gpu-testing
 #SBATCH --mail-type=END,FAIL
 
 export HF_HOME="/scratch/alpine/$USER/.cache/huggingface"
