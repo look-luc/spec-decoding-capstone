@@ -31,7 +31,7 @@ class MedusaConfig:
     grad_accum_steps:int = 100
 
     use_hf_assisted: bool = False
-    hf_schedule: Literal["heuristic", "constant"] | None = None
+    hf_schedule: Literal["heuristic", "constant"] | None = "constant"
 
     max_samples: int = DEFAULT_MAX_BI
     max_samples_mono: int = DEFAULT_MAX_MONO
