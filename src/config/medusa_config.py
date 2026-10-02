@@ -20,6 +20,10 @@ class MedusaConfig:
     top_k: int = 0
     top_p: float = 0.0
 
+    data_source: str = "tatoeba"
+    dataset_path: str | None = None
+    output_dir: str = "checkpoints"
+
     repetition_penalty: float = 1.1
     repetition_penalty_window: int = 16
 

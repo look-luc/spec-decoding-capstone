@@ -26,6 +26,39 @@ logger = logging.getLogger(__name__)
 
 TaskType = Literal["translation", "story_gen"]
 
+import os
+
+
+def resolve_dataset_path(config) -> str:
+    """
+    Constructs the dataset file path dynamically from config fields.
+    Supports explicitly configured dataset_path if provided,
+    otherwise constructs it based on task, data_source, and language_code.
+    """
+    # If explicitly set in config, respect it
+    if getattr(config, "dataset_path", None):
+        return config.dataset_path
+
+    # Fallback to dynamic resolution based on config properties
+    data_source = getattr(config, "data_source", "tatoeba")
+    task = getattr(config, "task", "translation")
+    lang = getattr(config, "language_code", "en")
+
+    if task == "translation":
+        path = f"data/{data_source}_{lang}.jsonl"
+    elif task == "story_gen":
+        path = f"data/stories_{lang}.jsonl"
+    else:
+        path = f"data/{task}_{lang}.jsonl"
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Resolved dataset path '{path}' does not exist. "
+            f"Ensure the dataset file exists or provide 'dataset_path' in your config."
+        )
+
+    return path
+
 
 def _model_short_name(model_name: str | None) -> str:
     """Extract short model identifier from HuggingFace repo path or local path."""
@@ -203,9 +236,9 @@ def run_medusa_training(config: Any):
     device = torch.device(cfg.device if cfg.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
     medusa_model.to(device)
 
-    dataset_path = getattr(config, "dataset_path", getattr(config, "data_path", getattr(cfg, "dataset_path", None)))
-    if not dataset_path or not os.path.exists(dataset_path):
-        raise ValueError(f"Valid dataset path required for Medusa training. Got: {dataset_path}")
+    dataset_path = resolve_dataset_path(config)
+
+    print(f"Loading dataset from: {dataset_path}")
 
     dataset = datasets.Dataset.from_parquet(dataset_path)
     dataset.set_format(type="torch", columns=["token_ids", "logprobs", "logprobs_vocab_idx"])

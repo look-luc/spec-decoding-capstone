@@ -18,6 +18,7 @@ class EagleConfig:
     draft_model_type: Literal["eagle", "Eagle"]
     decoding_mode: Literal["greedy", "sample"]
     tree_choices: str|list[int] = "custom"
+    num_heads: int = 4
     top_k: int = 0
     top_p: float = 0.0
 

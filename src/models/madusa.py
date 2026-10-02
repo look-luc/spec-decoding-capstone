@@ -51,7 +51,7 @@ class madusa(nn.Module):
                 )
                 for _ in range(int(num_heads))
             ]
-        ).to(target_device)
+        )
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

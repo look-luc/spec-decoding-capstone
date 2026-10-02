@@ -88,71 +88,79 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
     else:
         raise NotImplementedError(f"Unknown task: {config.task}")
 
-    # 1. Load target model
-    logger.info(f"Loading target model: {config.target_model}...")
-    if config.target_model is None:
-        target_model, target_tokenizer = load_model(
-            config.base_model, device=config.device
-        )
-    else:
-        target_model, target_tokenizer = load_model(
-            config.target_model, device=config.device
-        )
+    # 1. Train Draft Checkpoint FIRST (Before holding target model in GPU VRAM)
+    checkpoint_path = getattr(config, "draft_model", None)
+    model_name = config.target_model if config.target_model is not None else getattr(config, "base_model", None)
+
+    if config.draft_model_type in ("medusa", "madusa"):
+        if not checkpoint_path or not os.path.exists(checkpoint_path):
+            logger.info("Medusa checkpoint not found or not specified. Triggering Medusa head training...")
+            train_heads.setup_wandb(config)
+            train_heads.run_medusa_training(config=config)
+            checkpoint_path = os.path.join(config.output_dir, "medusa_heads.pt")
+            config.draft_model = checkpoint_path
+
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    elif config.draft_model_type == "eagle":
+        if not checkpoint_path or not os.path.exists(checkpoint_path):
+            logger.info("EAGLE checkpoint not found or not specified. Training EAGLE module...")
+            temp_target, _ = load_model(str(model_name), device=config.device)
+            temp_eagle = EagleModule(
+                vocab_size=temp_target.config.vocab_size,
+                embed_dim=temp_target.config.hidden_size,
+                hidden_dim=temp_target.config.hidden_size,
+                num_heads=config.num_heads
+            ).to(config.device)
+
+            run_eagle_training(config=config, base_model=temp_target, eagle_module=temp_eagle)
+            checkpoint_path = os.path.join(config.output_dir, "eagle_module_final.pt")
+            config.draft_model = checkpoint_path
+
+            del temp_target, temp_eagle
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    # 2. Load Target Model
+    logger.info(f"Loading target model: {model_name}...")
+    target_model, target_tokenizer = load_model(model_name, device=config.device)
     device = next(target_model.parameters()).device
 
-    # 2. Load data
+    # 3. Load Data
     logger.info(f"Loading test split for {config.language_code}...")
     dataset, language = load_data(config, target_tokenizer)
     dataset = dataset['test']
     logger.info(f"Loaded {len(dataset)} examples")
     assert dataset and len(dataset) > 0
 
-    # 3. Load draft model
+    # 4. Instantiate Draft Model
     if config.draft_model_type == "none":
         logger.info("Specified no draft model, running without spec dec")
         draft_model = None
         draft_tokenizer = None
+
     elif config.draft_model_type == "neural":
         if config.draft_model is None:
-            raise ValueError(
-                "draft_model must be set when draft_model_type='neural'"
-            )
+            raise ValueError("draft_model must be set when draft_model_type='neural'")
         logger.info(f"Loading draft model: {config.draft_model}...")
-        if config.draft_model != config.target_model:
-            draft_model, draft_tokenizer = load_model(
-                config.draft_model, device=config.device
-            )
+        if config.draft_model != model_name:
+            draft_model, draft_tokenizer = load_model(config.draft_model, device=config.device)
         else:
             draft_model = target_model
             draft_tokenizer = target_tokenizer
-    elif config.draft_model_type == "medusa" and getattr(MedusaConfig, "__dataclass_fields__", object):
+
+    elif config.draft_model_type in ("medusa", "madusa"):
         logger.info(f"Initializing Medusa model with {config.num_heads} heads...")
-        device = config.device if config.device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
-        if config.target_model is None:
-            target_model, target_tokenizer = load_model(
-                config.base_model, device=config.device
-            )
-            draft_model = madusa(base_model=target_model, num_heads=config.num_heads).to(device)
-            draft_tokenizer = target_tokenizer
-        else:
-            target_model, target_tokenizer = load_model(
-                config.target_model, device=config.device
-            )
-            draft_model = madusa(base_model=target_model, num_heads=config.num_heads).to(device)
-
-        checkpoint_path = config.draft_model
-        if not checkpoint_path or not os.path.exists(checkpoint_path):
-            logger.info("Medusa checkpoint not found or not specified. Triggering Medusa head training...")
-
-            # Setup training tracking and launch head distillation
-            train_heads.setup_wandb(config)
-            train_heads.run_medusa_training(config=config)
-
-            # Resolve default output path generated by training script
-            checkpoint_path = os.path.join(config.output_dir, "medusa_heads.pt")
+        draft_tokenizer = target_tokenizer
+        draft_model = madusa(base_model=target_model, num_heads=config.num_heads).to(device)
 
         logger.info(f"Loading Medusa head weights from: {checkpoint_path}...")
-        head_weights = torch.load(checkpoint_path, map_location=config.device)
+        head_weights = torch.load(checkpoint_path, map_location=device)
         if isinstance(head_weights, dict) and "heads" in head_weights:
             draft_model.heads.load_state_dict(head_weights["heads"])
         else:
@@ -166,17 +174,10 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
             embed_dim=target_model.config.hidden_size,
             hidden_dim=target_model.config.hidden_size,
             num_heads=config.num_heads
-        ).to(config.device)
-
-        checkpoint_path = config.draft_model
-        if not checkpoint_path or not os.path.exists(checkpoint_path):
-            logger.info("EAGLE checkpoint not found or not specified. Triggering EAGLE module training...")
-
-            run_eagle_training(config=config, base_model=target_model, eagle_module=draft_model)
-            checkpoint_path = os.path.join(config.output_dir, "eagle_module_final.pt")
+        ).to(device)
 
         logger.info(f"Loading EAGLE weights from: {checkpoint_path}...")
-        eagle_weights = torch.load(checkpoint_path, map_location=config.device)
+        eagle_weights = torch.load(checkpoint_path, map_location=device)
         draft_model.load_state_dict(eagle_weights)
 
     elif config.draft_model_type == "ngram":
@@ -184,8 +185,9 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
         draft_model = NGramModel(n=config.ngram_n, tokenizer=draft_tokenizer, vocab_size=target_model.config.vocab_size)
         draft_model.train(assemble_dataset(config.language_code, 'mono', target_tokenizer, config.max_samples_mono)['train'])
         logger.info(f"N-gram model vocabulary size: {draft_model.vocab_size}")
+
     else:
-        raise ValueError()
+        raise ValueError(f"Unsupported draft_model_type: {config.draft_model_type}")
 
     # 4. Decoding loop
     predictions = []
