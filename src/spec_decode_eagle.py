@@ -281,7 +281,7 @@ def spec_decode_eagle(
     input_ids: torch.Tensor,
     mode: Literal["greedy", "sample"],
     max_new_tokens: int = 128,
-    tree_choices:str|None=None,
+    tree_choices:str|list[int]=[1,4,2,3],
     top_k: int = 0,
     top_p: float = 0.0,
     repetition_penalty: float = 1.1,
@@ -345,8 +345,6 @@ def spec_decode_eagle(
         tree_choices_arr = [1, 8, 4, 2]
     elif tree_choices.lower() == "custom":
         tree_choices_arr = [1, 4, 2, 3]
-    else:
-        raise ValueError("Either EAGLE-1 or EAGLE-2")
 
     if eagle_module is None:
         eagle_module = EagleModule(

@@ -25,13 +25,13 @@ Imports from within src folder
 '''
 from src.config.config import (  # config functions and key
     WANDB_ENTITY,
-    EagleConfig,
     ExperimentConfig,
-    MedusaConfig,
 )
 from src.config.config_to_dataclass import (
     config_to_dataclass,  #to dataclass config file
 )
+from src.config.eagle_config import EagleConfig
+from src.config.medusa_config import MedusaConfig
 from src.data.create_inputs import (  # functions to create the prompts and inputs for draft models
     create_inputs,
     create_prompt,
@@ -51,6 +51,33 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+import configparser
+
+
+def resolve_config_class(config_path: str, overrides: list[str]) -> type:
+    """Peeks at config file and CLI overrides to return the target dataclass type."""
+    parser = configparser.ConfigParser()
+    parser.read(config_path)
+
+    draft_model_type = None
+
+    # Check DEFAULT section and all config sections
+    sections_to_check = ["DEFAULT"] + parser.sections()
+    for section in sections_to_check:
+        if section in parser and "draft_model_type" in parser[section]:
+            draft_model_type = parser[section]["draft_model_type"].strip("'\"")
+            break
+
+    # CLI overrides take precedence over the file
+    for override in overrides:
+        if override.startswith("draft_model_type="):
+            draft_model_type = override.split("=", 1)[1].strip("'\"")
+
+    if draft_model_type in ("medusa", "madusa"):
+        return MedusaConfig
+    elif draft_model_type == "eagle":
+        return EagleConfig
+    return ExperimentConfig
 
 def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
     """Run experiment: load config, init wandb, dispatch to task (e.g. translation)."""
@@ -210,40 +237,47 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
         wandb.summary.update(eval_metrics)
 
 
-def setup_wandb(config: ExperimentConfig):
-    target_short = config.target_model.split("/")[-1] if config.target_model is not None else None
-    is_spec = config.draft_model_type != "none"
-    is_medusa = config.draft_model_type == "medusa"
-    is_eagle = config.draft_model_type == "eagle"
+def setup_wandb(config: ExperimentConfig | MedusaConfig | EagleConfig):
+    target_model_name = getattr(config, "target_model", None) or getattr(config, "base_model", None)
+    target_short = target_model_name.split("/")[-1] if target_model_name else "base"
+
+    is_spec = config.draft_model_type.lower() != "none"
+    is_medusa = config.draft_model_type.lower() in ("medusa", "madusa")
+    is_eagle = config.draft_model_type.lower() == "eagle"
+
+    num_heads = getattr(config, "num_heads", None)
+    tree_choices = getattr(config, "tree_choices", None)
+
     if config.draft_model_type == 'ngram':
         draft_short = "ngram"
     elif config.draft_model_type == 'neural':
-        if config.draft_model:
-            draft_short = config.draft_model.split("/")[-1] # type:ignore
-        else:
-            draft_short = target_short
-    elif config.draft_model_type == "medusa" or config.draft_model_type == "eagle":
-        draft_short = config.draft_model.split("/")[-1] # type:ignore
+        draft_short = config.draft_model.split("/")[-1] if config.draft_model else target_short
+    elif is_medusa or is_eagle:
+        draft_short = config.draft_model.split("/")[-1] if config.draft_model else "trained_head"
     else:
         draft_short = None
 
     job_type = "spec" if is_spec else "baseline"
     group = f"{target_short}__{config.language_code}"
-    if is_spec:
-        name = f"{config.language_code}_{draft_short}_g{config.gamma}"
-    elif is_medusa:
-        name = f"{config.language_code}_{draft_short}_h{config.num_heads}_{config.draft_model_type}"
+
+    if is_medusa:
+        name = f"{config.language_code}_{draft_short}_h{num_heads}_medusa"
     elif is_eagle:
-        name = f"{config.language_code}_{draft_short}_h{config.tree_choices}_{config.draft_model_type}"
+        name = f"{config.language_code}_{draft_short}_tree{tree_choices}_eagle"
+    elif is_spec:
+        name = f"{config.language_code}_{draft_short}_g{config.gamma}"
     else:
         name = f"{config.language_code}_baseline"
 
     tags = [config.language_code, target_short, config.decoding_mode, config.task]
     if is_spec:
-        tags += [draft_short, f"gamma={config.gamma}", config.draft_model_type]
+        tags += [draft_short, config.draft_model_type]
+        if hasattr(config, "gamma"):
+            tags.append(f"gamma={config.gamma}")
     else:
         tags.append("baseline")
     tags = [t for t in tags if t is not None]
+
     if config.wandb_tag:
         tags.append(config.wandb_tag)
 
@@ -272,7 +306,8 @@ def setup_wandb(config: ExperimentConfig):
     wandb.define_metric("sentence/*", step_metric="sentence_idx", summary="mean")
 
     metrics_md = Path(__file__).parent / "src" / "metrics.md"
-    wandb.run.notes = metrics_md.read_text(encoding="utf-8")  # type:ignore
+    if metrics_md.exists():
+        wandb.run.notes = metrics_md.read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":
@@ -287,12 +322,17 @@ if __name__ == "__main__":
         nargs="+",
     )
     args = parser.parse_args()
+    overrides_list = args.overrides or []
+
+    # Dynamically select dataclass type
+    config_cls = resolve_config_class(args.config, overrides_list)
+
     config = config_to_dataclass(
         config_path=args.config,
-        overrides=args.overrides or [],
-        dataclass_type=ExperimentConfig,
+        overrides=overrides_list,
+        dataclass_type=config_cls,
     )
-    logger.info(f"Experiment config:\n{pprint.pformat(config)}")
+    logger.info(f"Loaded {config_cls.__name__}:\n{pprint.pformat(config)}")
 
     setup_wandb(config)
     try:
