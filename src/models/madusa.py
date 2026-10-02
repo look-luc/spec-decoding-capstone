@@ -14,8 +14,10 @@ class medusa_heads(nn.Module):
         super().__init__()
         # Initialize directly on target device & dtype to avoid FP32 memory spike
         self.linear = nn.Linear(
-            in_features, out_features, bias=False, device=device, dtype=dtype
+            in_features, out_features, bias=False, device="cpu", dtype=dtype
         )
+        if device != "cpu" and device is not None:
+            self.linear = self.linear.to(device)
 
     def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
         return self.linear(hidden_state)
@@ -36,7 +38,8 @@ class madusa(nn.Module):
         target_dtype = base_param.dtype
         target_device = base_param.device
 
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         self.heads = nn.ModuleList(
             [
@@ -48,7 +51,10 @@ class madusa(nn.Module):
                 )
                 for _ in range(int(num_heads))
             ]
-        )
+        ).to(target_device)
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     @property
     def dtype(self) -> torch.dtype:
