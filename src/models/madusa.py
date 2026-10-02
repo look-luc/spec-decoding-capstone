@@ -3,9 +3,19 @@ import torch.nn as nn
 
 
 class medusa_heads(nn.Module):
-    def __init__(self, in_features: int, out_features: int) -> None:
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
         super().__init__()
-        self.linear = nn.Linear(in_features, out_features, bias=False)
+        # Initialize directly on target device & dtype to avoid FP32 memory spike
+        self.linear = nn.Linear(
+            in_features, out_features, bias=False, device=device, dtype=dtype
+        )
 
     def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
         return self.linear(hidden_state)
@@ -16,23 +26,25 @@ class madusa(nn.Module):
         super().__init__()
         self.base_model = base_model
 
-        # Freeze base model parameters
         for param in self.base_model.parameters():
             param.requires_grad = False
 
         self.hidden_size = self.base_model.config.hidden_size
         self.vocab_size = self.base_model.config.vocab_size
 
-        # Infer dtype and device directly from base_model
         base_param = next(self.base_model.parameters())
         target_dtype = base_param.dtype
         target_device = base_param.device
 
-        # Initialize heads directly on the same device & precision
+        torch.cuda.empty_cache()
+
         self.heads = nn.ModuleList(
             [
-                medusa_heads(self.hidden_size, self.vocab_size).to(
-                    device=target_device, dtype=target_dtype
+                medusa_heads(
+                    self.hidden_size,
+                    self.vocab_size,
+                    device=target_device,
+                    dtype=target_dtype,
                 )
                 for _ in range(int(num_heads))
             ]
