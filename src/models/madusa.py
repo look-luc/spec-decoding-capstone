@@ -64,20 +64,17 @@ class madusa(nn.Module):
     def device(self) -> torch.device:
         return next(self.heads.parameters()).device
 
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
-        past_key_values: tuple | None = None,
-    ):
-        outputs = self.base_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            past_key_values=past_key_values,
-            output_hidden_states=True,
-        )
+    def forward(self, input_ids, attention_mask=None, **kwargs):
+        with torch.no_grad():
+            outputs = self.base_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True,
+                **kwargs,
+            )
+            last_hidden = outputs.hidden_states[-1]
 
-        last_hidden = outputs.hidden_states[-1]
         medusa_logits = [head(last_hidden) for head in self.heads]
 
-        return outputs.logits, medusa_logits, outputs.past_key_values
+        return medusa_logits

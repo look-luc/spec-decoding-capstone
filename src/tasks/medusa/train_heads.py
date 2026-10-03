@@ -177,6 +177,12 @@ def run_medusa_training(config: Any):
     logger.info(f"Loading model: {cfg.target_model}")
 
     model, tokenizer = load_model(cfg.target_model, device=cfg.device)
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
+
+    if hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable()
 
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
@@ -231,8 +237,8 @@ def run_medusa_training(config: Any):
                 ids = r["tokens"]
             elif "text" in r and r["text"] is not None:
                 ids = tokenizer.encode(r["text"], add_special_tokens=True)
-            elif config.language in r and r[config.language] is not None:
-                ids = tokenizer.encode(r[config.language], add_special_tokens=True)
+            elif config.language_code in r and r[config.language_code] is not None:
+                ids = tokenizer.encode(r[config.language_code], add_special_tokens=True)
             elif "English" in r and r["English"] is not None:
                 ids = tokenizer.encode(r["English"], add_special_tokens=True)
             else:
