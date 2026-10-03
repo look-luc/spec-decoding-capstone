@@ -144,7 +144,6 @@ def compute_loss(madusa_model: torch.nn.Module, batch: dict[str, Any], device: t
         for k in range(num_heads):
             head_logits = medusa_logits[k]
 
-            # Truncate predicted sequence and target labels for step shift (k + 1)
             preds = head_logits[:, :-(k + 1), :].contiguous().view(-1, head_logits.size(-1))
             targets = input_ids[:, (k + 1):].contiguous().view(-1)
             mask = label_mask[:, (k + 1):].contiguous().view(-1)
@@ -255,7 +254,7 @@ def run_medusa_training(config: Any):
         seq_len = max(len(ids) for ids in token_lists)
         input_ids = torch.full((bs, seq_len), tokenizer.pad_token_id, dtype=torch.long)
         attention_mask = torch.zeros((bs, seq_len), dtype=torch.long)
-        label_mask = torch.zeros((bs, seq_len - 1), dtype=torch.float32)
+        label_mask = torch.zeros((bs, seq_len), dtype=torch.float32)
 
         for idx, ids in enumerate(token_lists):
             item_seq_len = len(ids)
@@ -263,7 +262,7 @@ def run_medusa_training(config: Any):
 
             input_ids[idx][:item_seq_len] = torch.as_tensor(ids)
             attention_mask[idx][:item_seq_len] = 1
-            label_mask[idx][item_prompt_len - 1 : item_seq_len - 1] = 1.0
+            label_mask[idx][item_prompt_len:item_seq_len] = 1.0
 
         return {
             "input_ids": input_ids,
