@@ -50,36 +50,29 @@ def get_stop_token_ids(tokenizer, eos_token_id=None):
     return stop_ids
 
 
-def crop_kv_cache(past_key_values, new_length, best_path, max_accept_len):
+def crop_kv_cache(past_key_values, prefix_len, best_path, max_accept_len):
     """
-    Crop KV cache to a specific sequence length.
-    Handles both DynamicCache objects and tuple format.
+    Trims KV cache to retain prefix tokens and accepted tree branch tokens.
+
+    Args:
+        past_key_values: Tuple of (key, value) layer tensors, shape [batch, heads, seq_len, head_dim]
+        prefix_len (int): Length of sequence prior to tree draft expansion
+        best_path (list[int]): Node indices along the evaluated tree branch
+        max_accept_len (int): Number of accepted nodes from best_path
     """
-    if past_key_values is None:
-        return None
+    accepted_tree_positions = [prefix_len + best_path[i] for i in range(max_accept_len)]
+    keep_indices_list = list(range(prefix_len)) + accepted_tree_positions
 
-    accepted_tree_idx = []
-    for i in range(max_accept_len):
-        node_idx = best_path[i]
-        accepted_tree_idx.append(past_key_values+node_idx)
+    device = past_key_values[0][0].device
+    keep_indices = torch.tensor(keep_indices_list, dtype=torch.long, device=device)
 
-    keep_idx = torch.concat(range(new_length), accepted_tree_idx)
-    if hasattr(past_key_values, "select_indices") or hasattr(past_key_values, "select_idx"):
-        return past_key_values.select_index(keep_idx)
-    else:
-        new_past = []
-        for layer_past in past_key_values:
-            # NGramModel-style cache: a single tensor per layer
-            if isinstance(layer_past, torch.Tensor):
-                # Crop along the sequence-length dimension (assumed last)
-                new_past.append(layer_past[..., :new_length])
-            # Standard (key, value) pair cache from HF
-            elif len(layer_past) == 2:
-                key_state, value_state = layer_past
-                k_cropped = key_state[..., :new_length, :]
-                v_cropped = value_state[..., :new_length, :]
-                new_past.append((k_cropped, v_cropped))
-        return tuple(new_past)
+    cropped_past_key_values = ()
+    for k_layer, v_layer in past_key_values:
+        k_cropped = torch.index_select(k_layer, dim=2, index=keep_indices)
+        v_cropped = torch.index_select(v_layer, dim=2, index=keep_indices)
+        cropped_past_key_values += ((k_cropped, v_cropped),)
+
+    return cropped_past_key_values
 
 def get_kv_cache_length(past_key_values) -> int:
     """Helper to get the current sequence length of a KV cache."""
