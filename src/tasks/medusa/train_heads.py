@@ -3,7 +3,6 @@ import math
 import os
 import time
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any, Literal, cast
 
 import datasets
@@ -30,46 +29,6 @@ logger = logging.getLogger(__name__)
 TaskType = Literal["translation", "story_gen"]
 
 
-def resolve_dataset_path(config) -> str:
-    """
-    Resolves the dataset path from config or generates it automatically if missing.
-    """
-    dataset_path = getattr(config, "dataset_path", None)
-
-    if not dataset_path:
-        lang_code = getattr(config, "language_code", "ber")
-        dataset_path = f"data/tatoeba_{lang_code}.jsonl"
-
-    if os.path.exists(dataset_path):
-        logger.info(f"Using existing dataset file: {dataset_path}")
-        return dataset_path
-
-    logger.warning(f"Dataset path '{dataset_path}' not found. Automatically assembling dataset...")
-
-    lang_code = getattr(config, "language_code", "ber")
-    model_name = getattr(config, "model_name_or_path", "Qwen/Qwen3.5-9B")
-    max_samples = getattr(config, "max_samples", 6000)
-    dataset_type = getattr(config, "dataset_type", "bi")
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    splits = assemble_dataset(
-        lang_code=lang_code,
-        type=dataset_type,
-        tokenizer=tokenizer,
-        max_samples=max_samples,
-    )
-
-    Path(dataset_path).parent.mkdir(parents=True, exist_ok=True)
-
-    train_dataset = splits["train"]
-    train_dataset.to_json(dataset_path, orient="records", lines=True)
-
-    logger.info(f"Successfully generated and saved dataset to '{dataset_path}' ({len(train_dataset)} examples).")
-
-    return dataset_path
-
-
 def _model_short_name(model_name: str | None) -> str:
     if not model_name:
         return "unknown_model"
@@ -94,18 +53,10 @@ def _resolve_medusa_config(config: Any) -> MedusaConfig:
     if isinstance(medusa_subcfg, MedusaConfig):
         return medusa_subcfg
 
-    dataset_path = getattr(
-        config, "dataset_path", getattr(config, "data_path", getattr(config, "dataset", None))
-    )
     target_model = getattr(
         config, "target_model", getattr(config, "model", getattr(config, "base_model", None))
     )
     draft_model = getattr(config, "draft_model", None)
-
-    if not dataset_path:
-        raise ValueError(
-            "Configuration missing dataset path. Ensure 'dataset_path' or 'data_path' is set."
-        )
 
     raw_task = getattr(config, "task", "translation")
     task_val: TaskType = cast(
@@ -242,57 +193,58 @@ def run_medusa_training(config: Any):
     device = torch.device(cfg.device if cfg.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
     medusa_model.to(device)
 
-    dataset_path = resolve_dataset_path(config)
-    logger.info(f"Loading dataset from: {dataset_path}")
+    # Directly assemble dataset in memory without saving to disk
+    lang_code = getattr(config, "language_code", cfg.language_code)
+    dataset_type = getattr(config, "dataset_type", "bi")
+    max_samples = getattr(config, "max_samples", 6000)
 
-    if dataset_path.endswith(".parquet"):
-        dataset = datasets.Dataset.from_parquet(dataset_path)
-    else:
-        dataset = datasets.Dataset.from_json(dataset_path)
+    logger.info(f"Assembling dataset in memory for '{lang_code}' (type={dataset_type}, max_samples={max_samples})...")
+    splits = assemble_dataset(
+        lang_code=lang_code,
+        type=dataset_type,
+        tokenizer=tokenizer,
+        max_samples=max_samples,
+    )
 
-    if len(dataset) == 0:
-        logger.error(f"Dataset at '{dataset_path}' is empty.")
+    train_dataset = splits["train"]
+    eval_dataset = splits["test"] if "test" in splits else splits["train"].select([])
+
+    if len(train_dataset) == 0:
+        logger.error("Train dataset is empty.")
         return
 
     repo_name = build_repo_name(cfg)
     logger.info(f"HF repo: {repo_name}")
-
-    eval_split_ratio = getattr(config, "eval_split_ratio", 0.05)
-    if eval_split_ratio > 0 and len(dataset) > 1:
-        split = dataset.train_test_split(
-            test_size=eval_split_ratio, seed=42
-        )
-        train_dataset = split["train"]
-        eval_dataset = split["test"]
-    else:
-        train_dataset = dataset
-        eval_dataset = dataset.select([])
-
-    logger.info(
-        f"Split: {len(train_dataset)} train, {len(eval_dataset)} eval examples"
-    )
+    logger.info(f"Split: {len(train_dataset)} train, {len(eval_dataset)} eval examples")
 
     def collate_fn(batch):
         bs = len(batch)
+        max_seq_len_cap = getattr(config, "max_seq_len", 512)
 
         token_lists = []
         for r in batch:
-            if "token_ids" in r:
+            if "token_ids" in r and r["token_ids"] is not None:
                 ids = r["token_ids"]
-            elif "input_ids" in r:
+            elif "input_ids" in r and r["input_ids"] is not None:
                 ids = r["input_ids"]
-            elif "tokens" in r:
+            elif "tokens" in r and r["tokens"] is not None:
                 ids = r["tokens"]
-            elif "text" in r:
+            elif "text" in r and r["text"] is not None:
                 ids = tokenizer.encode(r["text"], add_special_tokens=True)
-            elif "Berber" in r:
-                # Handle raw language field if tokenization was skipped during dataset generation
-                ids = tokenizer.encode(r["Berber"], add_special_tokens=True)
-            elif "English" in r:
+            elif config.language in r and r[config.language] is not None:
+                ids = tokenizer.encode(r[config.language], add_special_tokens=True)
+            elif "English" in r and r["English"] is not None:
                 ids = tokenizer.encode(r["English"], add_special_tokens=True)
             else:
-                raise KeyError(f"Batch item missing token IDs. Available keys: {list(r.keys())}")
-            token_lists.append(ids)
+                # General fallback: check any non-origin string column
+                string_val = next((v for k, v in r.items() if k != "origin" and isinstance(v, str)), None)
+                if string_val:
+                    ids = tokenizer.encode(string_val, add_special_tokens=True)
+                else:
+                    raise KeyError(f"Batch item missing token IDs or text. Available keys: {list(r.keys())}")
+
+            # Truncate to maximum length to prevent CUDA OOM
+            token_lists.append(ids[:max_seq_len_cap])
 
         seq_len = max(len(ids) for ids in token_lists)
         input_ids = torch.full((bs, seq_len), tokenizer.pad_token_id, dtype=torch.long)
@@ -313,14 +265,15 @@ def run_medusa_training(config: Any):
             "label_mask": label_mask,
         }
 
-    batch_size = getattr(config, "batch_size", getattr(cfg, "batch_size", 4))
+    # Reduced default batch size to 1 to prevent CUDA memory allocation issues
+    batch_size = getattr(config, "batch_size", getattr(cfg, "batch_size", 1))
     dataloader = DataLoader(
         train_dataset,  # type: ignore[arg-type]
         batch_size=batch_size,
         shuffle=True,
         pin_memory=(device.type == "cuda"),
         collate_fn=collate_fn,
-        num_workers=2
+        num_workers=2,
     )
     eval_dataloader = DataLoader(
         eval_dataset,  # type: ignore[arg-type]
@@ -328,7 +281,7 @@ def run_medusa_training(config: Any):
         shuffle=False,
         pin_memory=(device.type == "cuda"),
         collate_fn=collate_fn,
-        num_workers=2
+        num_workers=2,
     )
 
     no_decay = {"bias", "LayerNorm.weight", "layernorm.weight"}
@@ -498,7 +451,7 @@ def _save_checkpoint(
     label,
     repo_name=None,
     push_to_hub=False,
-    scheduler=None
+    scheduler=None,
 ):
     run_name = wandb.run.name if wandb.run else "medusa-run"
     path = os.path.join(output_dir, f"{run_name}-{label}.ckpt")
