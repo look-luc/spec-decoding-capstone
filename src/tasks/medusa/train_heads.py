@@ -302,7 +302,13 @@ def run_medusa_training(config: Any):
         },
     ]
 
-    optimizer = optim.AdamW(param_groups, lr=cfg.learning_rate)
+    try:
+        import bitsandbytes as bnb
+        optimizer = bnb.optim.AdamW8bit(param_groups, lr=cfg.learning_rate)
+        logger.info("Using 8-bit AdamW optimizer (bitsandbytes)")
+    except ImportError:
+        optimizer = optim.AdamW(param_groups, lr=cfg.learning_rate)
+        logger.warning("bitsandbytes not found; falling back to 32-bit AdamW")
     scheduler = _build_scheduler(optimizer, cfg)
     start_step = _restore_training_state(cfg, optimizer, scheduler, device)
 
