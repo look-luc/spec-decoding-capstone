@@ -285,6 +285,11 @@ def run_medusa_training(config: Any):
                 ids = r["tokens"]
             elif "text" in r:
                 ids = tokenizer.encode(r["text"], add_special_tokens=True)
+            elif "Berber" in r:
+                # Handle raw language field if tokenization was skipped during dataset generation
+                ids = tokenizer.encode(r["Berber"], add_special_tokens=True)
+            elif "English" in r:
+                ids = tokenizer.encode(r["English"], add_special_tokens=True)
             else:
                 raise KeyError(f"Batch item missing token IDs. Available keys: {list(r.keys())}")
             token_lists.append(ids)
