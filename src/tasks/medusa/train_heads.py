@@ -250,12 +250,9 @@ def run_medusa_training(config: Any):
     else:
         dataset = datasets.Dataset.from_json(dataset_path)
 
-    # Safely check for logprobs key to avoid KeyError
     if len(dataset) == 0:
-        logger.error(
-            f"Dataset at '{dataset_path}' has no samples with 'logprobs'. "
-            "Ensure top-k feature extraction step was run prior to Medusa head training."
-        )
+        logger.error(f"Dataset at '{dataset_path}' is empty.")
+        return
 
     repo_name = build_repo_name(cfg)
     logger.info(f"HF repo: {repo_name}")
@@ -263,7 +260,7 @@ def run_medusa_training(config: Any):
     eval_split_ratio = getattr(config, "eval_split_ratio", 0.05)
     if eval_split_ratio > 0 and len(dataset) > 1:
         split = dataset.train_test_split(
-            test_size=eval_split_ratio, seed=42,
+            test_size=eval_split_ratio, seed=42
         )
         train_dataset = split["train"]
         eval_dataset = split["test"]
