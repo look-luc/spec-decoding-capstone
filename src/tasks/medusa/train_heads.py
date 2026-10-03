@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from src.config.medusa_config import MedusaConfig
-from src.data.dataset import assemble_dataset, get_language_name
+from src.data.dataset import assemble_dataset
 from src.models.madusa import madusa
 from src.utils import load_model
 
@@ -29,34 +29,30 @@ logger = logging.getLogger(__name__)
 
 TaskType = Literal["translation", "story_gen"]
 
+
 def resolve_dataset_path(config) -> str:
     """
     Resolves the dataset path from config or generates it automatically if missing.
     """
-    # 1. Determine target file path
     dataset_path = getattr(config, "dataset_path", None)
 
     if not dataset_path:
         lang_code = getattr(config, "language_code", "ber")
         dataset_path = f"data/tatoeba_{lang_code}.jsonl"
 
-    # 2. Return path if file already exists
     if os.path.exists(dataset_path):
         logger.info(f"Using existing dataset file: {dataset_path}")
         return dataset_path
 
-    # 3. Automatically build and save dataset if missing
     logger.warning(f"Dataset path '{dataset_path}' not found. Automatically assembling dataset...")
 
     lang_code = getattr(config, "language_code", "ber")
     model_name = getattr(config, "model_name_or_path", "Qwen/Qwen3.5-9B")
     max_samples = getattr(config, "max_samples", 6000)
-    dataset_type = getattr(config, "dataset_type", "bi")  # 'bi' or 'mono'
+    dataset_type = getattr(config, "dataset_type", "bi")
 
-    # Load tokenizer for token filtration in assemble_dataset
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    # Assemble dataset using src.data.dataset
     splits = assemble_dataset(
         lang_code=lang_code,
         type=dataset_type,
@@ -64,10 +60,8 @@ def resolve_dataset_path(config) -> str:
         max_samples=max_samples,
     )
 
-    # Ensure output directory exists
     Path(dataset_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # Export training split to JSONL format
     train_dataset = splits["train"]
     train_dataset.to_json(dataset_path, orient="records", lines=True)
 
@@ -77,14 +71,12 @@ def resolve_dataset_path(config) -> str:
 
 
 def _model_short_name(model_name: str | None) -> str:
-    """Extract short model identifier from HuggingFace repo path or local path."""
     if not model_name:
         return "unknown_model"
     return model_name.strip("/").split("/")[-1]
 
 
 def build_repo_name(cfg: Any) -> str:
-    """Construct a HuggingFace repository identifier from configuration."""
     hf_repo_id = getattr(cfg, "hf_repo_id", None)
     if hf_repo_id:
         return hf_repo_id
@@ -95,7 +87,6 @@ def build_repo_name(cfg: Any) -> str:
 
 
 def _resolve_medusa_config(config: Any) -> MedusaConfig:
-    """Extract or construct a valid MedusaConfig from an ExperimentConfig or MedusaConfig."""
     if isinstance(config, MedusaConfig):
         return config
 
@@ -139,7 +130,6 @@ def _resolve_medusa_config(config: Any) -> MedusaConfig:
 
 
 def setup_wandb(config: Any):
-    """Initialize wandb for distillation run tracking."""
     cfg = _resolve_medusa_config(config)
 
     model_short = _model_short_name(cfg.draft_model or cfg.target_model)
@@ -170,7 +160,6 @@ def setup_wandb(config: Any):
 
 
 def _build_scheduler(optimizer: optim.Optimizer, config: Any) -> LambdaLR:
-    """Build LR scheduler with linear warmup then cosine or linear decay."""
     max_steps = getattr(config, "max_steps", 3000)
     warmup_ratio = getattr(config, "warmup_ratio", 0.1)
     warmup_steps = max(1, int(max_steps * warmup_ratio))
@@ -192,35 +181,25 @@ def _build_scheduler(optimizer: optim.Optimizer, config: Any) -> LambdaLR:
 def compute_loss(madusa_model: torch.nn.Module, batch: dict[str, Any], device: torch.device) -> torch.Tensor:
     input_ids = batch["input_ids"].to(device)
     attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+    label_mask = batch["label_mask"].to(device)
 
     with autocast(device_type=device.type, enabled=(device.type == "cuda")):
-        out = madusa_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask
-        )
-        if isinstance(out, tuple):
-            medusa_logits = out[1] if len(out) >= 2 else out[0]
-        else:
-            medusa_logits = out
+        out = madusa_model(input_ids=input_ids, attention_mask=attention_mask)
+        medusa_logits = out[1] if isinstance(out, tuple) and len(out) >= 2 else out
 
         num_heads = len(medusa_logits) if isinstance(medusa_logits, (list, tuple)) else medusa_logits.shape[0]
         total_loss = 0.0
 
         for k in range(num_heads):
-            head_logits = medusa_logits[k] if isinstance(medusa_logits, (list, tuple)) else medusa_logits[k]
-            logprobs = torch.nn.functional.log_softmax(
-                head_logits[:, :-(k + 1), :].contiguous(),
-                dim=-1
-            )
-            target_logprobs = batch["topk_logprobs"][:, (k + 1):, :]
-            target_indices = batch["topk_logprobs_indices"][:, (k + 1):, :]
-            mask = batch["label_mask"][:, (k + 1):, :]
+            head_logits = medusa_logits[k]
 
-            model_logprobs = logprobs.gather(dim=-1, index=target_indices)
+            # Truncate predicted sequence and target labels for step shift (k + 1)
+            preds = head_logits[:, :-(k + 1), :].contiguous().view(-1, head_logits.size(-1))
+            targets = input_ids[:, (k + 1):].contiguous().view(-1)
+            mask = label_mask[:, (k + 1):].contiguous().view(-1)
 
-            head_loss = -(torch.exp(target_logprobs) * model_logprobs).sum(-1)
-            weighted_loss = (head_loss * mask).sum() / max(mask.sum(), 1)
-
+            loss_raw = torch.nn.functional.cross_entropy(preds, targets, reduction="none")
+            weighted_loss = (loss_raw * mask).sum() / max(mask.sum(), 1)
             total_loss += weighted_loss
 
     return total_loss / num_heads
@@ -228,7 +207,6 @@ def compute_loss(madusa_model: torch.nn.Module, batch: dict[str, Any], device: t
 
 @torch.no_grad()
 def _compute_eval_loss(student: torch.nn.Module, eval_dataloader: DataLoader, device: torch.device) -> float:
-    """Run a forward pass over the eval split and return average loss."""
     student.eval()
     total_loss = 0.0
     count = 0
@@ -248,17 +226,37 @@ def run_medusa_training(config: Any):
     logger.info(f"Loading model: {cfg.target_model}")
 
     model, tokenizer = load_model(cfg.target_model, device=cfg.device)
+
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+
+    if hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable()
+        logger.info("Enabled gradient checkpointing")
+
+    num_embeddings = model.get_input_embeddings().num_embeddings
+    if len(tokenizer) > num_embeddings:
+        model.resize_token_embeddings(len(tokenizer))
+
     medusa_model = madusa(model, num_heads=cfg.num_heads)
     device = torch.device(cfg.device if cfg.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
     medusa_model.to(device)
 
     dataset_path = resolve_dataset_path(config)
+    logger.info(f"Loading dataset from: {dataset_path}")
 
-    print(f"Loading dataset from: {dataset_path}")
+    if dataset_path.endswith(".parquet"):
+        dataset = datasets.Dataset.from_parquet(dataset_path)
+    else:
+        dataset = datasets.Dataset.from_json(dataset_path)
 
-    dataset = datasets.Dataset.from_parquet(dataset_path)
-    dataset.set_format(type="torch", columns=["token_ids", "logprobs", "logprobs_vocab_idx"])
-    dataset = dataset.filter(lambda r: len(r["logprobs"]) > 0)
+    # Safely check for logprobs key to avoid KeyError
+    if len(dataset) == 0:
+        logger.error(
+            f"Dataset at '{dataset_path}' has no samples with 'logprobs'. "
+            "Ensure top-k feature extraction step was run prior to Medusa head training."
+        )
+
     repo_name = build_repo_name(cfg)
     logger.info(f"HF repo: {repo_name}")
 
@@ -272,6 +270,7 @@ def run_medusa_training(config: Any):
     else:
         train_dataset = dataset
         eval_dataset = dataset.select([])
+
     logger.info(
         f"Split: {len(train_dataset)} train, {len(eval_dataset)} eval examples"
     )
@@ -279,29 +278,23 @@ def run_medusa_training(config: Any):
     def collate_fn(batch):
         bs = len(batch)
         seq_len = max([len(r["token_ids"]) for r in batch])
-        topk = len(batch[0]["logprobs"][0])
 
-        input_ids = torch.full((bs, seq_len), tokenizer.pad_token_id or 0, dtype=torch.long)
+        input_ids = torch.full((bs, seq_len), tokenizer.pad_token_id, dtype=torch.long)
         attention_mask = torch.zeros((bs, seq_len), dtype=torch.long)
-        topk_logprobs = torch.zeros((bs, seq_len - 1, topk), dtype=next(medusa_model.parameters()).dtype)
-        topk_logprobs_indices = torch.zeros((bs, seq_len - 1, topk), dtype=torch.long)
-        label_mask = torch.zeros((bs, seq_len - 1), dtype=next(medusa_model.parameters()).dtype)
+        label_mask = torch.zeros((bs, seq_len - 1), dtype=torch.float32)
 
         for idx in range(bs):
             item_seq_len = len(batch[idx]["token_ids"])
             item_prompt_len = batch[idx].get("prompt_length", 1)
-            input_ids[idx][0:item_seq_len] = torch.as_tensor(batch[idx]["token_ids"])
-            attention_mask[idx][0:item_seq_len] = 1
-            topk_logprobs[idx][item_prompt_len - 1:item_seq_len - 1] = torch.as_tensor(batch[idx]["logprobs"])
-            topk_logprobs_indices[idx][item_prompt_len - 1:item_seq_len - 1] = torch.as_tensor(batch[idx]["logprobs_vocab_idx"])
-            label_mask[idx][item_prompt_len - 1:item_seq_len - 1] = 1
+
+            input_ids[idx][:item_seq_len] = torch.as_tensor(batch[idx]["token_ids"])
+            attention_mask[idx][:item_seq_len] = 1
+            label_mask[idx][item_prompt_len - 1 : item_seq_len - 1] = 1.0
 
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "label_mask": label_mask,
-            "topk_logprobs": topk_logprobs,
-            "topk_logprobs_indices": topk_logprobs_indices,
         }
 
     batch_size = getattr(config, "batch_size", getattr(cfg, "batch_size", 4))
@@ -454,7 +447,6 @@ def save_medusa_weights(medusa_model: torch.nn.Module, output_dir: str, filename
 
 
 def _restore_training_state(config: Any, optimizer: optim.Optimizer, scheduler: LambdaLR, device: torch.device) -> int:
-    """Restore optimizer and scheduler state from checkpoint; return starting step."""
     start_step = 0
     resume_from = getattr(config, "resume_from", None)
     if resume_from:
@@ -487,11 +479,11 @@ def _save_checkpoint(
     tokenizer,
     optimizer,
     output_dir,
-    label,repo_name=None,
+    label,
+    repo_name=None,
     push_to_hub=False,
     scheduler=None
 ):
-    """Save model, tokenizer, optimizer, and scheduler state; optionally push to HF Hub."""
     run_name = wandb.run.name if wandb.run else "medusa-run"
     path = os.path.join(output_dir, f"{run_name}-{label}.ckpt")
     os.makedirs(path, exist_ok=True)
