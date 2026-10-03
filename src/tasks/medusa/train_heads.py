@@ -274,17 +274,31 @@ def run_medusa_training(config: Any):
 
     def collate_fn(batch):
         bs = len(batch)
-        seq_len = max([len(r["token_ids"]) for r in batch])
 
+        token_lists = []
+        for r in batch:
+            if "token_ids" in r:
+                ids = r["token_ids"]
+            elif "input_ids" in r:
+                ids = r["input_ids"]
+            elif "tokens" in r:
+                ids = r["tokens"]
+            elif "text" in r:
+                ids = tokenizer.encode(r["text"], add_special_tokens=True)
+            else:
+                raise KeyError(f"Batch item missing token IDs. Available keys: {list(r.keys())}")
+            token_lists.append(ids)
+
+        seq_len = max(len(ids) for ids in token_lists)
         input_ids = torch.full((bs, seq_len), tokenizer.pad_token_id, dtype=torch.long)
         attention_mask = torch.zeros((bs, seq_len), dtype=torch.long)
         label_mask = torch.zeros((bs, seq_len - 1), dtype=torch.float32)
 
-        for idx in range(bs):
-            item_seq_len = len(batch[idx]["token_ids"])
+        for idx, ids in enumerate(token_lists):
+            item_seq_len = len(ids)
             item_prompt_len = batch[idx].get("prompt_length", 1)
 
-            input_ids[idx][:item_seq_len] = torch.as_tensor(batch[idx]["token_ids"])
+            input_ids[idx][:item_seq_len] = torch.as_tensor(ids)
             attention_mask[idx][:item_seq_len] = 1
             label_mask[idx][item_prompt_len - 1 : item_seq_len - 1] = 1.0
 
