@@ -514,3 +514,77 @@ def speculative_decode(
         metrics["iteration_history"] = iteration_history
 
     return generated_tokens, metrics
+
+def apply_repetition_penalty(
+    logits: torch.Tensor,
+    context_ids: torch.Tensor,
+    penalty: float,
+) -> torch.Tensor:
+    """Apply multiplicative repetition penalty to raw logits (single position)."""
+    if penalty == 1.0 or context_ids.size(-1) == 0:
+        return logits
+
+    for b in range(logits.size(0)):
+        # window_counts = torch.nn.functional.one_hot(context_ids[b]).sum(dim=-2)
+        max_vocab_index = torch.max(context_ids[b]).item() + 1
+        max_vocab_index = cast(int, max_vocab_index)
+        window_counts = torch.zeros(max_vocab_index, dtype=torch.long, device=context_ids[b].device)
+        window_counts.scatter_add_(dim=0, index=context_ids[b], src=torch.ones_like(context_ids[b]))
+
+        per_token_penalty = penalty ** window_counts
+        logits[b,:max_vocab_index] = torch.where(
+            logits[b,:max_vocab_index] > 0,
+            logits[b,:max_vocab_index] / per_token_penalty,
+            logits[b,:max_vocab_index] * per_token_penalty,
+        )
+    return logits
+
+
+def apply_repetition_penalty_batched(
+    logits: torch.Tensor,
+    generated_tokens: torch.Tensor,
+    confirmed_len: int,
+    penalty: float,
+    window: int,
+) -> torch.Tensor:
+    """Vectorized repetition penalty for all verification positions at once.
+
+    Position j's context = generated_tokens[j-window:j]
+    """
+    if penalty == 1.0:
+        return logits
+
+    bs, seq_len = generated_tokens.shape
+    device = generated_tokens.device
+
+    for b in range(bs):
+        # Only positions before the current pos
+        mask = ~torch.triu(torch.ones(seq_len + 1, seq_len, dtype=torch.bool, device=device))
+
+        # Only positions after the start of the window
+        window_start = torch.clamp(torch.arange(seq_len + 1, device=device) - window, 0).unsqueeze(-1)
+        start_mask = torch.arange(seq_len, device=device) >= window_start
+        mask *= start_mask
+
+        # Replace masked positions with an unused index (hack to avoid using 0)
+        unused_idx = torch.max(generated_tokens).item() + 1
+        unused_idx = cast(int, unused_idx)
+        window_tokens = generated_tokens[b].expand(seq_len + 1, seq_len).masked_fill(~mask, unused_idx)
+
+        # Old way, OOM:
+        # window_counts = torch.nn.functional.one_hot(window_tokens).sum(dim=1)[...,:-1] # cut off the unused one
+
+        window_counts = torch.zeros(window_tokens.size(0), unused_idx + 1, dtype=torch.long, device=window_tokens.device)
+        window_counts.scatter_add_(dim=1, index=window_tokens, src=torch.ones_like(window_tokens))
+        window_counts  = window_counts[...,:-1] # cut off the unused vocab item
+
+        per_token_penalty = penalty ** window_counts
+        per_token_penalty = per_token_penalty[confirmed_len:]
+
+        logits[b,:,:unused_idx] = torch.where(
+            logits[b,:,:unused_idx] > 0,
+            logits[b,:,:unused_idx] / per_token_penalty,
+            logits[b,:,:unused_idx] * per_token_penalty,
+        )
+
+    return logits
