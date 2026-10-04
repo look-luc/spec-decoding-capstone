@@ -8,13 +8,32 @@ Contains:
 """
 
 import time
-from typing import Literal
+from typing import Literal, cast
 
 import torch
 import torch.nn as nn
 
 from src.models import madusa
 
+
+def sample(logprobs: torch.Tensor, mode: Literal["greedy", "sample"]):
+    """Sample a token index from (already filtered) log-probs."""
+    if mode == "greedy":
+        return logprobs.argmax(dim=-1)
+    return torch.distributions.Categorical(logits=logprobs).sample()
+
+def filter_logprobs(
+    logprobs: torch.Tensor, top_k: int = 0, top_p: float = 0.0
+) -> torch.Tensor:
+    """Apply top-k and/or top-p filtering, then renormalize to valid log-probs."""
+    filtered = logprobs
+    if top_k > 0:
+        filtered = apply_top_k(filtered, k=top_k)
+    if 0.0 < top_p < 1.0:
+        filtered = apply_top_p(filtered, p=top_p)
+    if top_k > 0 or 0.0 < top_p < 1.0:
+        filtered = torch.log_softmax(filtered, dim=-1)
+    return filtered
 
 def get_stop_token_ids(tokenizer, eos_token_id=None):
     """
