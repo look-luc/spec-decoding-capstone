@@ -45,6 +45,16 @@ class madusa(nn.Module):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def get_hidden_states(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        """Runs the base model forward pass to extract last hidden states."""
+        outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        return outputs.hidden_states[-1]
+
     @property
     def dtype(self) -> torch.dtype:
         return next(self.heads.parameters()).dtype

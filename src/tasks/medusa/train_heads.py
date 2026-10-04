@@ -135,14 +135,24 @@ def compute_loss(madusa_model: torch.nn.Module, batch: dict[str, Any], device: t
     label_mask = batch["label_mask"].to(device)
 
     with autocast(device_type=device.type, enabled=(device.type == "cuda")):
-        out = madusa_model(input_ids=input_ids, attention_mask=attention_mask)
-        medusa_logits = out[1] if isinstance(out, tuple) and len(out) >= 2 else out
+        if hasattr(madusa_model, "get_hidden_states"):
+            hidden_states = madusa_model.get_hidden_states(input_ids=input_ids, attention_mask=attention_mask)
+        else:
+            # Fallback if get_hidden_states is on inner model
+            hidden_states = madusa_model.base_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True,
+            ).hidden_states[-1]
 
-        num_heads = len(medusa_logits) if isinstance(medusa_logits, (list, tuple)) else medusa_logits.shape[0]
+        heads = getattr(madusa_model, "heads", None)
+        num_heads = len(heads) if heads is not None else getattr(madusa_model, "num_heads", 4)
         total_loss = 0.0
 
         for k in range(num_heads):
-            head_logits = medusa_logits[k]
+            # Iteratively compute projection for a single head
+            head_logits = heads[k](hidden_states) if heads is not None else madusa_model.compute_head(hidden_states, k)
 
             preds = head_logits[:, :-(k + 1), :].contiguous().view(-1, head_logits.size(-1))
             targets = input_ids[:, (k + 1):].contiguous().view(-1)
@@ -151,6 +161,8 @@ def compute_loss(madusa_model: torch.nn.Module, batch: dict[str, Any], device: t
             loss_raw = torch.nn.functional.cross_entropy(preds, targets, reduction="none")
             weighted_loss = (loss_raw * mask).sum() / max(mask.sum(), 1)
             total_loss += weighted_loss
+
+            del head_logits
 
     return total_loss / num_heads
 
@@ -180,15 +192,8 @@ def run_medusa_training(config: Any):
     for param in model.parameters():
         param.requires_grad = False
 
-    if hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
-
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-
-    if hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
-        logger.info("Enabled gradient checkpointing")
 
     num_embeddings = model.get_input_embeddings().num_embeddings
     if len(tokenizer) > num_embeddings:
@@ -306,9 +311,12 @@ def run_medusa_training(config: Any):
         import bitsandbytes as bnb
         optimizer = bnb.optim.AdamW8bit(param_groups, lr=cfg.learning_rate)
         logger.info("Using 8-bit AdamW optimizer (bitsandbytes)")
-    except ImportError:
-        optimizer = optim.AdamW(param_groups, lr=cfg.learning_rate)
-        logger.warning("bitsandbytes not found; falling back to 32-bit AdamW")
+    except ImportError as e:
+        logger.error("bitsandbytes is not installed. 32-bit AdamW will exceed VRAM limit.")
+        raise ImportError(
+            "bitsandbytes is required to enforce 8-bit AdamW optimizer. "
+            "Install it via `pip install bitsandbytes`."
+        ) from e
     scheduler = _build_scheduler(optimizer, cfg)
     start_step = _restore_training_state(cfg, optimizer, scheduler, device)
 
