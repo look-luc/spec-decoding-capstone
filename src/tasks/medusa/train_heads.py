@@ -201,7 +201,7 @@ def run_medusa_training(config: Any):
     # Directly assemble dataset in memory without saving to disk
     lang_code = getattr(config, "language_code", cfg.language_code)
     dataset_type = getattr(config, "dataset_type", "bi")
-    max_samples = getattr(config, "max_samples", 6000)
+    max_samples = max(getattr(config, "max_samples"),6000)
 
     logger.info(f"Assembling dataset in memory for '{lang_code}' (type={dataset_type}, max_samples={max_samples})...")
     splits = assemble_dataset(
