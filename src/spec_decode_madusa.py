@@ -347,7 +347,7 @@ def speculative_decode(
             _ = verifier_start and verifier_start.record()
             target_out = target_model(
                 input_ids=draft_tree_tokens,
-                past_kv_values=target_kv_cache,
+                past_key_values=target_kv_cache,
                 attention_mask=tree_atten_mask,
                 position_ids=tree_pos_id,
                 use_cache=True,
@@ -446,7 +446,9 @@ def speculative_decode(
                         per_position_accept_count[i] = per_position_accept_count[i] + 1
 
             # Step 5: commit accepted tokens and update seq len
-            tokens_to_add = torch.concat((best_accepted_token, best_bonus_token))
+            bonus_tok = best_bonus_token.view(-1) if best_bonus_token.ndim > 0 else best_bonus_token.unsqueeze(0)
+            accepted_toks = [t.view(-1) for t in best_accepted_token]
+            tokens_to_add = torch.cat([*accepted_toks, bonus_tok], dim=-1).unsqueeze(0)
             new_gen_idx = cur_gen_idx + tokens_to_add.size(dim=-1)
             generated_tokens[:, cur_gen_idx:new_gen_idx] = tokens_to_add
 
@@ -455,7 +457,7 @@ def speculative_decode(
             # Step 6: prune any unused tree kv cache and extract hidden state for next medusa pass
             target_kv_cache = crop_kv_cache(
                 target_out.past_key_values,
-                new_gen_idx - 1,
+                past_kv_len,
                 best_path,
                 max_accept_len,
             )

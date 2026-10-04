@@ -178,7 +178,11 @@ def speculative_decode(
 
     # This is okay because if we've gotten this far, we know the actual tokenizers are the same length.
     # Just be aware that logits may have a slightly shorter dimension
-    d_vocab = max(draft_model.config.vocab_size, target_model.config.vocab_size)
+    draft_vocab_size = (
+        draft_model.config.vocab_size if hasattr(draft_model, "config")
+        else getattr(draft_model, "vocab_size", target_model.config.vocab_size)
+    )
+    d_vocab = max(draft_vocab_size, target_model.config.vocab_size)
 
     # B,S+max_new
     generated_tokens = torch.concat(
