@@ -1,11 +1,11 @@
 from dataclasses import dataclass
 from typing import Literal
 
-WANDB_PROJECT = "speculative decoding v2"
+WANDB_PROJECT = "speculative decoding capstone"
 WANDB_ENTITY = "lecs-general"
 
-DEFAULT_MAX_BI = 6000
-DEFAULT_MAX_MONO = 20000
+DEFAULT_MAX_BI = 7000
+DEFAULT_MAX_MONO = 20500
 
 @dataclass
 class MedusaConfig:
@@ -32,6 +32,8 @@ class MedusaConfig:
 
     learning_rate:float=2e-5
     max_steps:int = 3000
+    eval_every:int = 75
+    log_every:int = 10
     grad_accum_steps:int = 100
 
     use_hf_assisted: bool = False

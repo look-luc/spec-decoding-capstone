@@ -1,12 +1,12 @@
 from dataclasses import dataclass
 from typing import Literal
 
-WANDB_PROJECT = "speculative decoding v2"
+WANDB_PROJECT = "speculative decoding capstone"
 WANDB_ENTITY = "lecs-general"
 
 # Default dataset caps used in our experiments
-DEFAULT_MAX_BI = 6000
-DEFAULT_MAX_MONO = 20000
+DEFAULT_MAX_BI = 7000
+DEFAULT_MAX_MONO = 20500
 
 @dataclass
 class EagleConfig:
