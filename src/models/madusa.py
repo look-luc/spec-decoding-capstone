@@ -27,31 +27,20 @@ class madusa(nn.Module):
     def __init__(self, base_model: nn.Module, num_heads: int = 4) -> None:
         super().__init__()
         self.base_model = base_model
+        self.num_heads = num_heads
+        self.vocab_size = base_model.config.vocab_size
+        hidden_size = base_model.config.hidden_size
 
         for param in self.base_model.parameters():
             param.requires_grad = False
 
-        self.hidden_size = self.base_model.config.hidden_size
-        self.vocab_size = self.base_model.config.vocab_size
-
-        base_param = next(self.base_model.parameters())
-        target_dtype = base_param.dtype
-        target_device = base_param.device
-
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        self.heads = nn.ModuleList(
-            [
-                medusa_heads(
-                    self.hidden_size,
-                    self.vocab_size,
-                    device=target_device,
-                    dtype=target_dtype,
-                )
-                for _ in range(int(num_heads))
-            ]
-        )
+        self.heads = nn.ModuleList([
+            nn.Linear(hidden_size, self.vocab_size, bias=False)
+            for _ in range(num_heads)
+        ])
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -64,17 +53,17 @@ class madusa(nn.Module):
     def device(self) -> torch.device:
         return next(self.heads.parameters()).device
 
-    def forward(self, input_ids, attention_mask=None, **kwargs):
-        with torch.no_grad():
-            outputs = self.base_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-                return_dict=True,
-                **kwargs,
-            )
-            last_hidden = outputs.hidden_states[-1]
+    def forward(self, hidden_states=None, input_ids=None, **kwargs):
+        if hidden_states is None:
+            if input_ids is None:
+                raise ValueError("Must provide either hidden_states or input_ids to Medusa module.")
+            with torch.no_grad():
+                outputs = self.base_model(
+                    input_ids=input_ids,
+                    output_hidden_states=True,
+                    **kwargs
+                )
+            hidden_states = outputs.hidden_states[-1]
 
-        medusa_logits = [head(last_hidden) for head in self.heads]
-
-        return medusa_logits
+        logits = torch.stack([head(hidden_states) for head in self.heads], dim=0)
+        return logits

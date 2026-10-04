@@ -231,7 +231,7 @@ def speculative_decode(
     tokenizer,
     input_ids,
     mode: Literal["greedy", "sample"],
-    medusa: nn.Module | None,
+    medusa: nn.Module,
     num_heads:int,
     max_new_tokens=128,
     tree_choices: str | list[list] = "Standard",
@@ -340,7 +340,7 @@ def speculative_decode(
             num_iterations += 1
             past_kv_len = get_kv_cache_length(target_kv_cache)
             _ = draft_start and draft_start.record()
-            medusa_logits = medusa(last_hidden)
+            medusa_logits = medusa(last_hidden=last_hidden)
 
             # Step 1: parallel draft candidate tree generation via the medusa heads
             tree_data = build_tree(
