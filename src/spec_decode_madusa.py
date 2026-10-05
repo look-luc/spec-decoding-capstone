@@ -79,51 +79,65 @@ def crop_kv_cache(
     tree_node_dict: dict | None = None,
 ):
     """
-    Retains prompt prefix KV entries and index-selects accepted Medusa tree branch nodes.
-    Supports legacy tuples as well as modern Hugging Face DynamicCache attributes.
+    Crop and gather KV cache entries for Medusa tree speculative decoding.
+
+    Avoids direct iteration over past_key_values to prevent Cache.__iter__
+    failures on LinearAttentionLayer objects.
     """
     if past_key_values is None:
         return None
 
-    # Construct the exact sequence indices to keep
+    # Construct sequence indices to keep
     keep_indices = list(range(prefix_len))
-    if best_path is not None and tree_node_dict is not None and max_accept_len > 0:
+    if max_accept_len > 0 and best_path is not None and tree_node_dict is not None:
         for depth in range(max_accept_len):
             path_prefix = tuple(best_path[: depth + 1])
             node_idx = tree_node_dict[path_prefix]
             keep_indices.append(prefix_len + node_idx)
 
-    # DynamicCache handling
-    if not isinstance(past_key_values, tuple):
-        if hasattr(past_key_values, "key_cache"):
-            key_cache = past_key_values.key_cache
-            value_cache = past_key_values.value_cache
-        elif hasattr(past_key_values, "_key_cache"):
-            key_cache = past_key_values._key_cache
-            value_cache = past_key_values._value_cache
-        else:
-            raise AttributeError("DynamicCache does not expose key_cache or _key_cache")
-
-        if len(key_cache) > 0 and key_cache[0] is not None:
-            device = key_cache[0].device
-            indices_tensor = torch.tensor(keep_indices, dtype=torch.long, device=device)
-            for i in range(len(key_cache)):
-                key_cache[i] = torch.index_select(key_cache[i], dim=2, index=indices_tensor)
-                value_cache[i] = torch.index_select(value_cache[i], dim=2, index=indices_tensor)
-
+    # Standard Hugging Face DynamicCache (key_cache and value_cache attributes)
+    if hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"):
+        if len(past_key_values.key_cache) > 0:
+            device = past_key_values.key_cache[0].device
+            idx = torch.tensor(keep_indices, dtype=torch.long, device=device)
+            for i in range(len(past_key_values.key_cache)):
+                past_key_values.key_cache[i] = torch.index_select(
+                    past_key_values.key_cache[i], dim=2, index=idx
+                )
+                past_key_values.value_cache[i] = torch.index_select(
+                    past_key_values.value_cache[i], dim=2, index=idx
+                )
         return past_key_values
 
-    # Legacy tuple of tuples ((k, v), ...) fallback
-    device = past_key_values[0][0].device
-    indices_tensor = torch.tensor(keep_indices, dtype=torch.long, device=device)
+    # Newer Hugging Face Cache implementations using .layers
+    if hasattr(past_key_values, "layers"):
+        for layer in past_key_values.layers:
+            if hasattr(layer, "keys") and getattr(layer, "keys", None) is not None:
+                idx = torch.tensor(keep_indices, dtype=torch.long, device=layer.keys.device)
+                layer.keys = torch.index_select(layer.keys, dim=2, index=idx)
+                layer.values = torch.index_select(layer.values, dim=2, index=idx)
+            elif hasattr(layer, "key_states") and getattr(layer, "key_states", None) is not None:
+                idx = torch.tensor(keep_indices, dtype=torch.long, device=layer.key_states.device)
+                layer.key_states = torch.index_select(layer.key_states, dim=2, index=idx)
+                layer.value_states = torch.index_select(layer.value_states, dim=2, index=idx)
+        return past_key_values
 
-    cropped_kv = []
-    for k_layer, v_layer in past_key_values:
-        k_cropped = torch.index_select(k_layer, dim=2, index=indices_tensor)
-        v_cropped = torch.index_select(v_layer, dim=2, index=indices_tensor)
-        cropped_kv.append((k_cropped, v_cropped))
+    # Legacy tuple/list cache format ((key_state, value_state), ...)
+    if isinstance(past_key_values, (tuple, list)):
+        new_past = []
+        for layer_past in past_key_values:
+            if isinstance(layer_past, torch.Tensor):
+                idx = torch.tensor(keep_indices, dtype=torch.long, device=layer_past.device)
+                new_past.append(torch.index_select(layer_past, dim=-1, index=idx))
+            elif isinstance(layer_past, (tuple, list)) and len(layer_past) == 2:
+                k_state, v_state = layer_past
+                idx = torch.tensor(keep_indices, dtype=torch.long, device=k_state.device)
+                k_cropped = torch.index_select(k_state, dim=2, index=idx)
+                v_cropped = torch.index_select(v_state, dim=2, index=idx)
+                new_past.append((k_cropped, v_cropped))
+        return tuple(new_past)
 
-    return tuple(cropped_kv)
+    return past_key_values
 
 def get_kv_cache_length(past_key_values) -> int:
     """Helper to get the current sequence length of a KV cache."""
