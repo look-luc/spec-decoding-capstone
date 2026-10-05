@@ -13,6 +13,7 @@ from typing import Literal, cast
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers.cache_utils import DynamicCache
 
 from src.models import madusa
 
@@ -70,34 +71,27 @@ def get_stop_token_ids(tokenizer, eos_token_id=None):
     return stop_ids
 
 
-def crop_kv_cache(past_key_values, prefix_len, best_path, max_accept_len):
-    """
-    Trims KV cache to retain prefix tokens and accepted tree branch tokens.
-    Handles both HF DynamicCache instances and legacy tuple-of-tuples.
-    """
-    accepted_tree_positions = [prefix_len + best_path[i] for i in range(max_accept_len)] if best_path is not None else []
-    keep_indices_list = list(range(prefix_len)) + accepted_tree_positions
+def crop_kv_cache(past_key_values, keep_len):
+    if past_key_values is None:
+        return None
 
-    # Handle Hugging Face DynamicCache / Cache objects in-place
-    if hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"):
+    # Handle Hugging Face DynamicCache objects
+    if isinstance(past_key_values, DynamicCache) or hasattr(past_key_values, "key_cache"):
         device = past_key_values.key_cache[0].device
-        keep_indices = torch.tensor(keep_indices_list, dtype=torch.long, device=device)
         for i in range(len(past_key_values.key_cache)):
-            past_key_values.key_cache[i] = torch.index_select(past_key_values.key_cache[i], dim=2, index=keep_indices)
-            past_key_values.value_cache[i] = torch.index_select(past_key_values.value_cache[i], dim=2, index=keep_indices)
+            past_key_values.key_cache[i] = past_key_values.key_cache[i][..., :keep_len, :]
+            past_key_values.value_cache[i] = past_key_values.value_cache[i][..., :keep_len, :]
         return past_key_values
 
-    # Legacy tuple of tuples fallback
+    # Handle legacy tuple of tuples ((k, v), ...)
     device = past_key_values[0][0].device
-    keep_indices = torch.tensor(keep_indices_list, dtype=torch.long, device=device)
-
-    cropped_past_key_values = ()
-    for k_layer, v_layer in past_key_values:
-        k_cropped = torch.index_select(k_layer, dim=2, index=keep_indices)
-        v_cropped = torch.index_select(v_layer, dim=2, index=keep_indices)
-        cropped_past_key_values += ((k_cropped, v_cropped),)
-
-    return cropped_past_key_values
+    cropped_kv = []
+    for k, v in past_key_values:
+        cropped_kv.append((
+            k[..., :keep_len, :],
+            v[..., :keep_len, :]
+        ))
+    return tuple(cropped_kv)
 
 def get_kv_cache_length(past_key_values) -> int:
     """Helper to get the current sequence length of a KV cache."""
@@ -215,7 +209,8 @@ def build_tree(
     attn_mask = torch.full(
         size=(1, 1, size, past_kv_len + size),
         fill_value=-float('inf'),
-        device=logits.device
+        device=logits.device,
+        dtype=logits.dtype
     )
     attn_mask[:, :, :, :past_kv_len] = 0.0
 
