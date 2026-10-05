@@ -171,7 +171,7 @@ def build_tree(
     for depth in range(num_heads):
         max_rank = max_rank_per_depth[depth]
         head_logits = filter_logprobs(
-            F.LogSoftmax(logits[depth], dim=-1),
+            F.log_softmax(logits[depth], dim=-1),
             top_k=top_k,
             top_p=top_p
         )
@@ -185,13 +185,14 @@ def build_tree(
         for depth in range(len(path)):
             rank = path[depth]
             token_id = top_token_per_head[depth][rank]
-            prefix = (depth, rank, token_id)
 
-            if prefix not in node_dict:
+            path_prefix = tuple(path[: depth + 1])
+            parent_prefix = tuple(path[: depth])
+
+            if path_prefix not in node_dict:
                 new_node_idx = len(nodes)
-                node_dict[prefix] = new_node_idx
+                node_dict[path_prefix] = new_node_idx
 
-                parent_prefix = prefix[:-1]
                 parent_idx = node_dict[parent_prefix] if len(parent_prefix) > 0 else None
 
                 nodes.append(
@@ -199,7 +200,7 @@ def build_tree(
                         "node_idx": new_node_idx,
                         "token_id": token_id,
                         "depth": depth,
-                        "parent_idx": parent_idx
+                        "parent_idx": parent_idx,
                     }
                 )
 
@@ -229,7 +230,8 @@ def build_tree(
         "attention": attn_mask,
         "pos_idx": pos_idx,
         "paths": valid_tree_choice,
-        "nodes": nodes
+        "nodes": nodes,
+        "node_dict": node_dict,
     }
 
 def speculative_decode(
@@ -349,7 +351,6 @@ def speculative_decode(
             _ = draft_start and draft_start.record()
             medusa_logits = medusa(hidden_states=last_hidden)
 
-            # Step 1: parallel draft candidate tree generation via the medusa heads
             tree_data = build_tree(
                 logits=medusa_logits,
                 cur_gen_idx=cur_gen_idx,
@@ -364,12 +365,12 @@ def speculative_decode(
             tree_pos_id = tree_data["pos_idx"]
             tree_paths = tree_data["paths"]
             tree_nodes = tree_data["nodes"]
+            tree_node_dict = tree_data["node_dict"]
 
             _ = draft_end and draft_end.record()
 
             total_draft_tokens += draft_tree_tokens.size(-1)
 
-            # Step 2: Target Model Parallel Verification Pass over Candidate Tree
             _ = verifier_start and verifier_start.record()
             target_out = target_model(
                 input_ids=draft_tree_tokens,
@@ -401,7 +402,6 @@ def speculative_decode(
 
             verify_logits = target_out.logits
 
-            # Step 3: evaluate candidate of tree paths to find the longest valid branch
             best_path = None
             best_accepted_token = []
             best_bonus_token = None
@@ -415,7 +415,8 @@ def speculative_decode(
                 path_matched = True
 
                 for depth in range(len(path)):
-                    node_i = path[depth]
+                    path_prefix = tuple(path[: depth + 1])
+                    node_i = tree_node_dict[path_prefix]
                     draft_token = draft_tree_tokens[:, node_i]
 
                     if depth == 0:
@@ -423,11 +424,12 @@ def speculative_decode(
                     else:
                         parent_node_idx = tree_nodes[node_i]["parent_idx"]
                         raw_pred_logits = verify_logits[:, parent_node_idx, :]
+
                     node_raw_logits = penalize_logits(
                         raw_pred_logits,
                         confirmed_len=cur_gen_idx + depth,
                     )
-                    target_dist = apply_filters(F.LogSoftmax(node_raw_logits, dim=-1))
+                    target_dist = apply_filters(F.log_softmax(node_raw_logits, dim=-1))
                     verified_token = select_index(target_dist)
 
                     if draft_token == verified_token:
@@ -439,18 +441,18 @@ def speculative_decode(
                         break
 
                 if path_matched and bonus_token is None:
-                    last_node_idx = path[-1]
-                    bonnus_raw_logits = penalize_logits(
+                    last_node_idx = tree_node_dict[tuple(path)]
+                    bonus_raw_logits = penalize_logits(
                         verify_logits[:, last_node_idx, :],
                         confirmed_len=cur_gen_idx + len(path),
                         draft_so_far=generated_tokens,
                     )
                     bonus_token = select_index(
                         apply_filters(
-                            F.LogSoftmax(bonnus_raw_logits, dim=-1)
+                            F.log_softmax(bonus_raw_logits, dim=-1)
                         )
                     )
-                    bonus_logits = bonnus_raw_logits
+                    bonus_logits = bonus_raw_logits
 
                 if len(accepted_in_path) > max_accept_len:
                     max_accept_len = len(accepted_in_path)
@@ -459,7 +461,6 @@ def speculative_decode(
                     best_bonus_logits = bonus_logits
                     best_path = path
 
-            # Step 4: updating octile acceptance counters
             gen_offset = cur_gen_idx - prompt_len
             draft_depth = len(best_path) if best_path is not None else 0
 
@@ -471,7 +472,6 @@ def speculative_decode(
                     if rel_depth == checkpoint - gen_offset:
                         per_position_accept_count[i] = per_position_accept_count[i] + 1
 
-            # Step 5: commit accepted tokens and update seq len
             bonus_tok = best_bonus_token.view(-1) if best_bonus_token.ndim > 0 else best_bonus_token.unsqueeze(0)
             accepted_toks = [t.view(-1) for t in best_accepted_token]
             tokens_to_add = torch.cat([*accepted_toks, bonus_tok], dim=-1).unsqueeze(0)
@@ -480,7 +480,6 @@ def speculative_decode(
 
             total_matched_tokens += len(best_accepted_token)
 
-            # Step 6: prune any unused tree kv cache and extract hidden state for next medusa pass
             target_kv_cache = crop_kv_cache(
                 target_out.past_key_values,
                 past_kv_len,
@@ -489,7 +488,8 @@ def speculative_decode(
             )
 
             if max_accept_len > 0 and best_path is not None:
-                last_node_idx = best_path[max_accept_len - 1]
+                last_accepted_prefix = tuple(best_path[:max_accept_len])
+                last_node_idx = tree_node_dict[last_accepted_prefix]
                 last_hidden = target_out.hidden_states[-1][:, last_node_idx:last_node_idx + 1, :].detach().clone()
             else:
                 last_hidden = last_hidden.detach().clone()
@@ -555,7 +555,6 @@ def apply_repetition_penalty(
         return logits
 
     for b in range(logits.size(0)):
-        # window_counts = torch.nn.functional.one_hot(context_ids[b]).sum(dim=-2)
         max_vocab_index = torch.max(context_ids[b]).item() + 1
         max_vocab_index = cast(int, max_vocab_index)
         window_counts = torch.zeros(max_vocab_index, dtype=torch.long, device=context_ids[b].device)
