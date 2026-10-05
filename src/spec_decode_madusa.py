@@ -71,26 +71,58 @@ def get_stop_token_ids(tokenizer, eos_token_id=None):
     return stop_ids
 
 
-def crop_kv_cache(past_key_values, keep_len):
+def crop_kv_cache(
+    past_key_values,
+    prefix_len: int,
+    best_path: list | None = None,
+    max_accept_len: int = 0,
+    tree_node_dict: dict | None = None,
+):
+    """
+    Retains prompt prefix KV entries and index-selects accepted Medusa tree branch nodes.
+    Supports legacy tuples as well as modern Hugging Face DynamicCache attributes.
+    """
     if past_key_values is None:
         return None
 
-    # Handle Hugging Face DynamicCache objects
-    if isinstance(past_key_values, DynamicCache) or hasattr(past_key_values, "key_cache"):
-        device = past_key_values.key_cache[0].device
-        for i in range(len(past_key_values.key_cache)):
-            past_key_values.key_cache[i] = past_key_values.key_cache[i][..., :keep_len, :]
-            past_key_values.value_cache[i] = past_key_values.value_cache[i][..., :keep_len, :]
+    # Construct the exact sequence indices to keep
+    keep_indices = list(range(prefix_len))
+    if best_path is not None and tree_node_dict is not None and max_accept_len > 0:
+        for depth in range(max_accept_len):
+            path_prefix = tuple(best_path[: depth + 1])
+            node_idx = tree_node_dict[path_prefix]
+            keep_indices.append(prefix_len + node_idx)
+
+    # DynamicCache handling
+    if not isinstance(past_key_values, tuple):
+        if hasattr(past_key_values, "key_cache"):
+            key_cache = past_key_values.key_cache
+            value_cache = past_key_values.value_cache
+        elif hasattr(past_key_values, "_key_cache"):
+            key_cache = past_key_values._key_cache
+            value_cache = past_key_values._value_cache
+        else:
+            raise AttributeError("DynamicCache does not expose key_cache or _key_cache")
+
+        if len(key_cache) > 0 and key_cache[0] is not None:
+            device = key_cache[0].device
+            indices_tensor = torch.tensor(keep_indices, dtype=torch.long, device=device)
+            for i in range(len(key_cache)):
+                key_cache[i] = torch.index_select(key_cache[i], dim=2, index=indices_tensor)
+                value_cache[i] = torch.index_select(value_cache[i], dim=2, index=indices_tensor)
+
         return past_key_values
 
-    # Handle legacy tuple of tuples ((k, v), ...)
+    # Legacy tuple of tuples ((k, v), ...) fallback
     device = past_key_values[0][0].device
+    indices_tensor = torch.tensor(keep_indices, dtype=torch.long, device=device)
+
     cropped_kv = []
-    for k, v in past_key_values:
-        cropped_kv.append((
-            k[..., :keep_len, :],
-            v[..., :keep_len, :]
-        ))
+    for k_layer, v_layer in past_key_values:
+        k_cropped = torch.index_select(k_layer, dim=2, index=indices_tensor)
+        v_cropped = torch.index_select(v_layer, dim=2, index=indices_tensor)
+        cropped_kv.append((k_cropped, v_cropped))
+
     return tuple(cropped_kv)
 
 def get_kv_cache_length(past_key_values) -> int:
@@ -476,8 +508,11 @@ def speculative_decode(
             total_matched_tokens += len(best_accepted_token)
 
             target_kv_cache = crop_kv_cache(
-                target_out.past_key_values,
-                max_accept_len,
+                past_key_values=target_out.past_key_values,
+                prefix_len=past_kv_len,
+                best_path=best_path,
+                max_accept_len=max_accept_len,
+                tree_node_dict=tree_node_dict,
             )
 
             if max_accept_len > 0 and best_path is not None:
