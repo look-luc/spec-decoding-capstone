@@ -72,16 +72,21 @@ def get_stop_token_ids(tokenizer, eos_token_id=None):
 def crop_kv_cache(past_key_values, prefix_len, best_path, max_accept_len):
     """
     Trims KV cache to retain prefix tokens and accepted tree branch tokens.
-
-    Args:
-        past_key_values: Tuple of (key, value) layer tensors, shape [batch, heads, seq_len, head_dim]
-        prefix_len (int): Length of sequence prior to tree draft expansion
-        best_path (list[int]): Node indices along the evaluated tree branch
-        max_accept_len (int): Number of accepted nodes from best_path
+    Handles both HF DynamicCache instances and legacy tuple-of-tuples.
     """
-    accepted_tree_positions = [prefix_len + best_path[i] for i in range(max_accept_len)]
+    accepted_tree_positions = [prefix_len + best_path[i] for i in range(max_accept_len)] if best_path is not None else []
     keep_indices_list = list(range(prefix_len)) + accepted_tree_positions
 
+    # Handle Hugging Face DynamicCache / Cache objects in-place
+    if hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"):
+        device = past_key_values.key_cache[0].device
+        keep_indices = torch.tensor(keep_indices_list, dtype=torch.long, device=device)
+        for i in range(len(past_key_values.key_cache)):
+            past_key_values.key_cache[i] = torch.index_select(past_key_values.key_cache[i], dim=2, index=keep_indices)
+            past_key_values.value_cache[i] = torch.index_select(past_key_values.value_cache[i], dim=2, index=keep_indices)
+        return past_key_values
+
+    # Legacy tuple of tuples fallback
     device = past_key_values[0][0].device
     keep_indices = torch.tensor(keep_indices_list, dtype=torch.long, device=device)
 
@@ -275,7 +280,7 @@ def speculative_decode(
         if draft_so_far is not None and draft_so_far.size(-1) > 0:
             ctx = torch.cat([ctx, draft_so_far], dim=-1)
         ctx = ctx[:, -repetition_penalty_window:]
-        return apply_repetition_penalty(logits, ctx, repetition_penalty)
+        return apply_repetition_penalty(logits.clone(), ctx, repetition_penalty)
 
     stop_token_ids = torch.tensor(
         list(get_stop_token_ids(tokenizer, eos_token_id)), device=device
@@ -481,12 +486,16 @@ def speculative_decode(
                 max_accept_len,
             )
 
-            if max_accept_len > 0:
+            if max_accept_len > 0 and best_path is not None:
                 last_node_idx = best_path[max_accept_len - 1]
-                last_hidden = target_out.hidden_states[-1][:, last_node_idx:last_node_idx + 1, :]
+                last_hidden = target_out.hidden_states[-1][:, last_node_idx:last_node_idx + 1, :].detach().clone()
+            else:
+                last_hidden = last_hidden.detach().clone()
 
             prev_target_logits = best_bonus_logits
             cur_gen_idx = new_gen_idx
+
+            del target_out
 
             if generated_tokens[:, cur_gen_idx - 1] in stop_token_ids:
                 generated_tokens = generated_tokens[:, :cur_gen_idx]

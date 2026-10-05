@@ -12,7 +12,7 @@
 #SBATCH --mail-type=END,FAIL
 
 export HF_HOME="/scratch/alpine/$USER/.cache/huggingface"
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 mkdir -p $HF_HOME
 
 module load uv

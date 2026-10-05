@@ -135,23 +135,31 @@ def compute_loss(madusa_model: torch.nn.Module, batch: dict[str, Any], device: t
     label_mask = batch["label_mask"].to(device)
 
     with autocast(device_type=device.type, enabled=(device.type == "cuda")):
-        if hasattr(madusa_model, "get_hidden_states"):
-            hidden_states = madusa_model.get_hidden_states(input_ids=input_ids, attention_mask=attention_mask)
-        else:
-            # Fallback if get_hidden_states is on inner model
-            hidden_states = madusa_model.base_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-                return_dict=True,
-            ).hidden_states[-1]
+        # Freeze backbone forward pass to prevent tracking autograd activation graph
+        with torch.no_grad():
+            if hasattr(madusa_model, "get_hidden_states"):
+                hidden_states = madusa_model.get_hidden_states(input_ids=input_ids, attention_mask=attention_mask)
+            elif hasattr(madusa_model, "base_model"):
+                outputs = madusa_model.base_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+                hidden_states = outputs.hidden_states[-1]
+                del outputs  # Free all intermediate layer hidden state tensors
+            else:
+                outputs = madusa_model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+                hidden_states = outputs.hidden_states[-1]
+                del outputs
+
+        hidden_states = hidden_states.detach()
 
         heads = getattr(madusa_model, "heads", None)
-        num_heads = len(heads) if heads is not None else getattr(madusa_model, "num_heads", 4)
+        num_heads = len(heads) if heads is not None else 4
         total_loss = 0.0
 
         for k in range(num_heads):
-            # Iteratively compute projection for a single head
             head_logits = heads[k](hidden_states) if heads is not None else madusa_model.compute_head(hidden_states, k)
 
             preds = head_logits[:, :-(k + 1), :].contiguous().view(-1, head_logits.size(-1))
