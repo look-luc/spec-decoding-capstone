@@ -477,8 +477,6 @@ def speculative_decode(
 
             target_kv_cache = crop_kv_cache(
                 target_out.past_key_values,
-                past_kv_len,
-                best_path,
                 max_accept_len,
             )
 
