@@ -34,11 +34,13 @@ class madusa(nn.Module):
         for param in self.base_model.parameters():
             param.requires_grad = False
 
+        base_dtype = getattr(base_model, "dtype", torch.float32)
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
         self.heads = nn.ModuleList([
-            nn.Linear(hidden_size, self.vocab_size, bias=False)
+            nn.Linear(hidden_size, self.vocab_size, bias=False, dtype=base_dtype)
             for _ in range(num_heads)
         ])
 

@@ -12,6 +12,7 @@ from typing import Literal, cast
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.models import madusa
 
@@ -170,7 +171,7 @@ def build_tree(
     for depth in range(num_heads):
         max_rank = max_rank_per_depth[depth]
         head_logits = filter_logprobs(
-            nn.LogSoftmax(logits[depth], dim=-1),
+            F.LogSoftmax(logits[depth], dim=-1),
             top_k=top_k,
             top_p=top_p
         )
@@ -259,6 +260,7 @@ def speculative_decode(
 
     if medusa is None:
         medusa = madusa.madusa(base_model=target_model, num_heads=num_heads)
+    medusa = medusa.to(device=device, dtype=target_model.dtype)
 
     if isinstance(tree_choices, str):
         tree_choices = default_tree(tree_choices, num_heads=num_heads)
@@ -345,7 +347,7 @@ def speculative_decode(
             num_iterations += 1
             past_kv_len = get_kv_cache_length(target_kv_cache)
             _ = draft_start and draft_start.record()
-            medusa_logits = medusa(last_hidden=last_hidden)
+            medusa_logits = medusa(hidden_states=last_hidden)
 
             # Step 1: parallel draft candidate tree generation via the medusa heads
             tree_data = build_tree(
@@ -425,7 +427,7 @@ def speculative_decode(
                         raw_pred_logits,
                         confirmed_len=cur_gen_idx + depth,
                     )
-                    target_dist = apply_filters(nn.LogSoftmax(node_raw_logits, dim=-1))
+                    target_dist = apply_filters(F.LogSoftmax(node_raw_logits, dim=-1))
                     verified_token = select_index(target_dist)
 
                     if draft_token == verified_token:
@@ -445,7 +447,7 @@ def speculative_decode(
                     )
                     bonus_token = select_index(
                         apply_filters(
-                            nn.LogSoftmax(bonnus_raw_logits, dim=-1)
+                            F.LogSoftmax(bonnus_raw_logits, dim=-1)
                         )
                     )
                     bonus_logits = bonnus_raw_logits
