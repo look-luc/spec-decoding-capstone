@@ -1,8 +1,8 @@
 '''
 File to run experiment
 '''
-
 import argparse
+import gc
 import json
 import logging
 import os
@@ -100,10 +100,11 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
             checkpoint_path = os.path.join(config.output_dir, "medusa_heads.pt")
             config.draft_model = checkpoint_path
 
-            import gc
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+            setup_wandb(config)
 
     elif config.draft_model_type == "eagle":
         if not checkpoint_path or not os.path.exists(checkpoint_path):
