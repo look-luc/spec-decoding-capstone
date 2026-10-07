@@ -424,7 +424,7 @@ def run_medusa_training(config: Any):
         medusa_model, tokenizer, optimizer, output_dir, "final", repo_name,
         push_to_hub=bool(hf_repo_id), scheduler=scheduler,
     )
-    wandb.finish()
+
     save_medusa_weights(medusa_model, output_dir, "medusa_heads.pt")
 
 
