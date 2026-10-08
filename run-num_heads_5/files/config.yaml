@@ -1,0 +1,179 @@
+_wandb:
+    value:
+        cli_version: 0.25.1
+        code_path: code/run.py
+        e:
+            0suiumjm35jvm7zjjoa3w6bw4ydexr6x:
+                args:
+                    - experiments/med_greedy.cfg
+                codePath: run.py
+                codePathLocal: run.py
+                cpu_count: 64
+                cpu_count_logical: 128
+                cudaVersion: "12.4"
+                disk:
+                    /:
+                        total: "34342961152"
+                        used: "9260855296"
+                email: lude4390@colorado.edu
+                executable: /projects/lude4390/spec-decoding-capstone/.venv/bin/python3
+                gpu: NVIDIA L40
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 18176
+                      memoryTotal: "48305799168"
+                      name: NVIDIA L40
+                      uuid: GPU-5d652519-40c8-bee4-422c-9cf1af7354be
+                host: bgpu-g4-18.rc.int.colorado.edu
+                memory:
+                    total: "269483859968"
+                os: Linux-4.18.0-477.27.1.el8_8.x86_64-x86_64-with-glibc2.28
+                program: /projects/lude4390/spec-decoding-capstone/run.py
+                python: CPython 3.13.7
+                root: /projects/lude4390/spec-decoding-capstone
+                slurm:
+                    cluster_name: blanca
+                    conf: /etc/slurm/slurm.conf
+                    cpus_on_node: "2"
+                    cpus_per_task: "2"
+                    export_env: NONE
+                    get_user_env: "1"
+                    gpus_on_node: "1"
+                    gtids: "0"
+                    job_account: blanca-clearlab2
+                    job_cpus_per_node: "2"
+                    job_end_time: "1791493554"
+                    job_gid: "1232369"
+                    job_gpus: "1"
+                    job_id: "28647153"
+                    job_name: specdec_framework
+                    job_nodelist: bgpu-g4-18
+                    job_num_nodes: "1"
+                    job_partition: blanca-clearlab2
+                    job_qos: blanca-clearlab2
+                    job_start_time: "1791474954"
+                    job_uid: "1232369"
+                    job_user: lude4390
+                    jobid: "28647153"
+                    localid: "0"
+                    mem_per_node: "65536"
+                    nnodes: "1"
+                    nodeid: "0"
+                    nodelist: bgpu-g4-18
+                    nprocs: "1"
+                    ntasks: "1"
+                    oom_kill_step: "0"
+                    prio_process: "0"
+                    procid: "0"
+                    scratch: /scratch/local/28647153
+                    script_context: prolog_task
+                    submit_dir: /projects/lude4390/spec-decoding-capstone/scripts
+                    submit_host: login-ci4
+                    task_pid: "312436"
+                    tasks_per_node: "1"
+                    topology_addr: .blanca-g4-gpu.bgpu-g4-18
+                    topology_addr_pattern: switch.switch.node
+                    tres_per_task: cpu=2
+                startedAt: "2026-10-08T15:56:14.205351Z"
+                writerId: 0suiumjm35jvm7zjjoa3w6bw4ydexr6x
+        m:
+            - "1": step
+              "6":
+                - 3
+              "7": []
+            - "2": train/*
+              "5": 1
+              "6":
+                - 1
+              "7": []
+            - "2": eval/*
+              "5": 1
+              "6":
+                - 1
+              "7": []
+        python_version: 3.13.7
+        t:
+            "1":
+                - 1
+                - 11
+                - 49
+                - 51
+                - 71
+            "2":
+                - 1
+                - 11
+                - 49
+                - 51
+                - 71
+            "3":
+                - 2
+                - 7
+                - 15
+                - 16
+                - 62
+            "4": 3.13.7
+            "5": 0.25.1
+            "6": 5.7.0
+            "12": 0.25.1
+            "13": linux-x86_64
+data_source:
+    value: tatoeba
+dataset_path:
+    value: null
+decoding_mode:
+    value: greedy
+device:
+    value: cuda
+draft_model:
+    value: Qwen/Qwen3.5-0.8B
+draft_model_type:
+    value: medusa
+eval_every:
+    value: 75
+gamma:
+    value: 5
+grad_accum_steps:
+    value: 2
+hf_schedule:
+    value: constant
+language_code:
+    value: ber
+learning_rate:
+    value: 1e-05
+log_every:
+    value: 10
+max_new_tokens:
+    value: 128
+max_samples:
+    value: 7500
+max_samples_mono:
+    value: 20500
+max_steps:
+    value: 225
+num_heads:
+    value: 5
+output_dir:
+    value: checkpoints/medusa_ber
+repetition_penalty:
+    value: 1.1
+repetition_penalty_window:
+    value: 16
+story_seed:
+    value: 0
+target_model:
+    value: Qwen/Qwen3.5-0.8B
+task:
+    value: translation
+top_k:
+    value: 0
+top_p:
+    value: 0
+track_iterations:
+    value: false
+use_hf_assisted:
+    value: false
+wandb_project:
+    value: speculative decoding capstone
+wandb_tag:
+    value: null

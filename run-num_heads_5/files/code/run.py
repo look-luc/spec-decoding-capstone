@@ -1,0 +1,342 @@
+'''
+File to run experiment
+'''
+import argparse
+import configparser
+import gc
+import json
+import logging
+import os
+import pprint
+from dataclasses import asdict
+from pathlib import Path
+from typing import Mapping
+
+import torch
+import wandb
+from tqdm import tqdm
+
+from src.models.eagle import EagleModule
+from src.models.madusa import madusa
+from src.tasks.eagle.train_eagle import run_eagle_training
+from src.tasks.medusa import train_heads
+
+'''
+Imports from within src folder
+'''
+from src.config.config import (  # config functions and key
+    WANDB_ENTITY,
+    ExperimentConfig,
+)
+from src.config.config_to_dataclass import (
+    config_to_dataclass,  # to dataclass config file
+)
+from src.config.eagle_config import EagleConfig
+from src.config.medusa_config import MedusaConfig
+from src.data.create_inputs import (  # functions to create the prompts and inputs for draft models
+    create_inputs,
+    create_prompt,
+)
+from src.data.dataset import (
+    assemble_dataset,  # function to get all the datasets inplace and into one set
+)
+from src.generation import generate_output  # getting function that generates outputs
+from src.n_gram import NGramModel  # NGram model load
+from src.spec_dec_metrics import log_token_flow, summarize_metrics
+from src.utils import load_model
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="\033[90m%(asctime)s \033[36m[%(levelname)s] \033[1;33m%(module)s\033[0m: %(message)s",
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+
+
+def resolve_config_class(config_path: str, overrides: list[str]) -> type:
+    """Peeks at config file and CLI overrides to return the target dataclass type."""
+    parser = configparser.ConfigParser()
+    parser.read(config_path)
+
+    draft_model_type = None
+
+    # Check DEFAULT section and all config sections
+    sections_to_check = ["DEFAULT"] + parser.sections()
+    for section in sections_to_check:
+        if section in parser and "draft_model_type" in parser[section]:
+            draft_model_type = parser[section]["draft_model_type"].strip("'\"")
+            break
+
+    # CLI overrides take precedence over the file
+    for override in overrides:
+        if override.startswith("draft_model_type="):
+            draft_model_type = override.split("=", 1)[1].strip("'\"")
+
+    if draft_model_type in ("medusa", "madusa"):
+        return MedusaConfig
+    elif draft_model_type == "eagle":
+        return EagleConfig
+    return ExperimentConfig
+
+def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
+    """Run experiment: load config, init wandb, dispatch to task (e.g. translation)."""
+    if config.task == "translation":
+        from src.tasks.translation import compute_eval_metrics, load_data
+    elif config.task == "story_gen":
+        from src.tasks.story_gen import compute_eval_metrics, load_data
+    else:
+        raise NotImplementedError(f"Unknown task: {config.task}")
+
+    # 1. Train Draft Checkpoint FIRST (Before holding target model in GPU VRAM)
+    checkpoint_path = getattr(config, "draft_model", None)
+    model_name = config.target_model if config.target_model is not None else getattr(config, "base_model", None)
+
+    if config.draft_model_type in ("medusa", "madusa"):
+        if not checkpoint_path or not os.path.exists(checkpoint_path):
+            logger.info("Medusa checkpoint not found or not specified. Triggering Medusa head training...")
+            train_heads.setup_wandb(config)
+            train_heads.run_medusa_training(config=config)
+            checkpoint_path = os.path.join(config.output_dir, "medusa_heads.pt")
+            config.draft_model = checkpoint_path
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    elif config.draft_model_type == "eagle":
+        if not checkpoint_path or not os.path.exists(checkpoint_path):
+            logger.info("EAGLE checkpoint not found or not specified. Training EAGLE module...")
+            temp_target, _ = load_model(str(model_name), device=config.device)
+            temp_eagle = EagleModule(
+                vocab_size=temp_target.config.vocab_size,
+                embed_dim=temp_target.config.hidden_size,
+                hidden_dim=temp_target.config.hidden_size,
+                num_heads=config.num_heads
+            ).to(config.device)
+
+            run_eagle_training(config=config, base_model=temp_target, eagle_module=temp_eagle)
+            checkpoint_path = os.path.join(config.output_dir, "eagle_module_final.pt")
+            config.draft_model = checkpoint_path
+
+            del temp_target, temp_eagle
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    if wandb.run is None:
+        setup_wandb(config)
+
+    # 2. Load Target Model
+    logger.info(f"Loading target model: {model_name}...")
+    target_model, target_tokenizer = load_model(model_name, device=config.device)
+    device = next(target_model.parameters()).device
+
+    # 3. Load Data
+    logger.info(f"Loading test split for {config.language_code}...")
+    dataset, language = load_data(config, target_tokenizer)
+    dataset = dataset['test']
+    logger.info(f"Loaded {len(dataset)} examples")
+    assert dataset and len(dataset) > 0
+
+    # 4. Instantiate Draft Model
+    if config.draft_model_type == "none":
+        logger.info("Specified no draft model, running without spec dec")
+        draft_model = None
+        draft_tokenizer = None
+
+    elif config.draft_model_type == "neural":
+        if config.draft_model is None:
+            raise ValueError("draft_model must be set when draft_model_type='neural'")
+        logger.info(f"Loading draft model: {config.draft_model}...")
+        if config.draft_model != model_name:
+            draft_model, draft_tokenizer = load_model(config.draft_model, device=config.device)
+        else:
+            draft_model = target_model
+            draft_tokenizer = target_tokenizer
+
+    elif config.draft_model_type in ("medusa", "madusa"):
+        logger.info(f"Initializing Medusa model with {config.num_heads} heads...")
+        draft_tokenizer = target_tokenizer
+        draft_model = madusa(base_model=target_model, num_heads=config.num_heads).to(device)
+
+        logger.info(f"Loading Medusa head weights from: {checkpoint_path}...")
+        head_weights = torch.load(checkpoint_path, map_location=device)
+        if isinstance(head_weights, dict) and "heads" in head_weights:
+            draft_model.heads.load_state_dict(head_weights["heads"])
+        else:
+            draft_model.heads.load_state_dict(head_weights)
+
+    elif config.draft_model_type == "eagle":
+        logger.info(f"Initializing EAGLE draft module ({config.num_heads} heads)...")
+        draft_tokenizer = target_tokenizer
+        draft_model = EagleModule(
+            vocab_size=target_model.config.vocab_size,
+            embed_dim=target_model.config.hidden_size,
+            hidden_dim=target_model.config.hidden_size,
+            num_heads=config.num_heads
+        ).to(device)
+
+        logger.info(f"Loading EAGLE weights from: {checkpoint_path}...")
+        eagle_weights = torch.load(checkpoint_path, map_location=device)
+        draft_model.load_state_dict(eagle_weights)
+
+    elif config.draft_model_type == "ngram":
+        draft_tokenizer = target_tokenizer
+        draft_model = NGramModel(n=config.ngram_n, tokenizer=draft_tokenizer, vocab_size=target_model.config.vocab_size)
+        draft_model.train(assemble_dataset(config.language_code, 'mono', target_tokenizer, config.max_samples_mono)['train'])
+        logger.info(f"N-gram model vocabulary size: {draft_model.vocab_size}")
+
+    else:
+        raise ValueError(f"Unsupported draft_model_type: {config.draft_model_type}")
+
+    # 5. Decoding loop
+    predictions = []
+    all_metrics: list[dict] = []
+    for row_idx, row in enumerate(tqdm(dataset, desc="Decoding")):
+        assert isinstance(row, Mapping)
+        prompt = create_prompt(config.task, language, row['source'])
+        inputs = create_inputs(prompt, target_tokenizer, device)
+        predicted, metrics = generate_output(
+            inputs,
+            target_model,
+            target_tokenizer,
+            draft_model,
+            draft_tokenizer,
+            config,
+        )
+        predictions.append(predicted)
+        all_metrics.append(metrics)
+        if row_idx < 5:
+            logger.info(f"Prompt {row_idx}: {prompt}")
+            logger.info(f"Response {row_idx}: {predicted}\n")
+
+    # 6. Save generated outputs (story gen only)
+    if config.task == "story_gen":
+        out_path = Path(wandb.run.dir) / "outputs.jsonl"  # type:ignore
+        with open(out_path, "w", encoding="utf-8") as f:
+            for pred in predictions:
+                f.write(json.dumps({"text": pred}, ensure_ascii=False) + "\n")
+        logger.info(f"Saved {len(predictions)} outputs to {out_path}")
+        wandb.save(str(out_path))
+
+    # 7. Aggregate and log speculative decoding metrics
+    per_sentence_metrics, summary_metrics = summarize_metrics(
+        all_metrics,
+        config.gamma,
+        config.draft_model_type != "none" and not config.use_hf_assisted,
+    )
+    wandb.summary.update(summary_metrics)
+    for entry in per_sentence_metrics:
+        wandb.log(entry)
+    for key in list(wandb.summary.keys()):
+        if key.startswith("sentence/") or key == "sentence_idx":
+            del wandb.summary[key]
+    log_token_flow([row['source'] for row in dataset], all_metrics, config)  # type:ignore
+
+    # 8. Log evaluation metrics (skipped for tasks without references, e.g. story_gen)
+    eval_metrics = compute_eval_metrics([row['target'] for row in dataset], predictions)  # type:ignore
+    if eval_metrics:
+        wandb.summary.update(eval_metrics)
+
+
+def setup_wandb(config: ExperimentConfig | MedusaConfig | EagleConfig):
+    target_model_name = getattr(config, "target_model", None) or getattr(config, "base_model", None)
+    target_short = target_model_name.split("/")[-1] if target_model_name else "base"
+
+    is_spec = config.draft_model_type.lower() != "none"
+    is_medusa = config.draft_model_type.lower() in ("medusa", "madusa")
+    is_eagle = config.draft_model_type.lower() == "eagle"
+
+    num_heads = getattr(config, "num_heads", None)
+    tree_choices = getattr(config, "tree_choices", None)
+
+    if config.draft_model_type == 'ngram':
+        draft_short = "ngram"
+    elif config.draft_model_type == 'neural':
+        draft_short = config.draft_model.split("/")[-1] if config.draft_model else target_short
+    elif is_medusa or is_eagle:
+        draft_short = config.draft_model.split("/")[-1] if config.draft_model else "trained_head"
+    else:
+        draft_short = None
+
+    job_type = "spec" if is_spec else "baseline"
+    group = f"{target_short}__{config.language_code}"
+
+    if is_medusa:
+        name = f"{config.language_code}_{draft_short}_h{num_heads}_medusa"
+    elif is_eagle:
+        name = f"{config.language_code}_{draft_short}_tree{tree_choices}_eagle"
+    elif is_spec:
+        name = f"{config.language_code}_{draft_short}_g{config.gamma}"
+    else:
+        name = f"{config.language_code}_baseline"
+
+    tags = [config.language_code, target_short, config.decoding_mode, config.task]
+    if is_spec:
+        tags += [draft_short, config.draft_model_type]
+        if hasattr(config, "gamma"):
+            tags.append(f"gamma={config.gamma}")
+    else:
+        tags.append("baseline")
+    tags = [t for t in tags if t is not None]
+
+    if config.wandb_tag:
+        tags.append(config.wandb_tag)
+
+    wandb_config = asdict(config)
+    wandb_config["target_model_short"] = target_short
+    wandb_config["draft_model_short"] = draft_short
+    wandb_config["model_pair"] = (
+        f"{target_short}+{draft_short}" if is_spec else target_short
+    )
+    wandb_config["run_type"] = job_type
+    wandb_config["slurm_job_id"] = os.environ.get("SLURM_JOB_ID")
+
+    os.environ["WANDB_START_METHOD"] = "thread"
+
+    wandb.init(
+        project=config.wandb_project,
+        entity=WANDB_ENTITY,
+        config=wandb_config,
+        group=group,
+        job_type=job_type,
+        name=name,
+        tags=tags,
+    )
+
+    wandb.define_metric("sentence_idx")
+    wandb.define_metric("sentence/*", step_metric="sentence_idx", summary="mean")
+
+    metrics_md = Path(__file__).parent / "src" / "metrics.md"
+    if metrics_md.exists():
+        wandb.run.notes = metrics_md.read_text(encoding="utf-8")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "config", help="A config file (cfg, ini) with configuration parameters"
+    )
+    parser.add_argument(
+        "--overrides",
+        "-o",
+        help="Override config arguments, in the format `key1=value1 key2=value2`",
+        nargs="+",
+    )
+    args = parser.parse_args()
+    overrides_list = args.overrides or []
+
+    # Dynamically select dataclass type
+    config_cls = resolve_config_class(args.config, overrides_list)
+
+    config = config_to_dataclass(
+        config_path=args.config,
+        overrides=overrides_list,
+        dataclass_type=config_cls,
+    )
+    logger.info(f"Loaded {config_cls.__name__}:\n{pprint.pformat(config)}")
+
+    try:
+        run(config)
+    finally:
+        wandb.finish()
