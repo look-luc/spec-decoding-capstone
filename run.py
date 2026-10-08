@@ -2,6 +2,7 @@
 File to run experiment
 '''
 import argparse
+import configparser
 import gc
 import json
 import logging
@@ -28,7 +29,7 @@ from src.config.config import (  # config functions and key
     ExperimentConfig,
 )
 from src.config.config_to_dataclass import (
-    config_to_dataclass,  #to dataclass config file
+    config_to_dataclass,  # to dataclass config file
 )
 from src.config.eagle_config import EagleConfig
 from src.config.medusa_config import MedusaConfig
@@ -37,10 +38,10 @@ from src.data.create_inputs import (  # functions to create the prompts and inpu
     create_prompt,
 )
 from src.data.dataset import (
-    assemble_dataset,  #function to get all the datasets inplace and into one set
+    assemble_dataset,  # function to get all the datasets inplace and into one set
 )
 from src.generation import generate_output  # getting function that generates outputs
-from src.n_gram import NGramModel  #NGram model load
+from src.n_gram import NGramModel  # NGram model load
 from src.spec_dec_metrics import log_token_flow, summarize_metrics
 from src.utils import load_model
 
@@ -50,8 +51,6 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
-
-import configparser
 
 
 def resolve_config_class(config_path: str, overrides: list[str]) -> type:
@@ -79,7 +78,7 @@ def resolve_config_class(config_path: str, overrides: list[str]) -> type:
         return EagleConfig
     return ExperimentConfig
 
-def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
+def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
     """Run experiment: load config, init wandb, dispatch to task (e.g. translation)."""
     if config.task == "translation":
         from src.tasks.translation import compute_eval_metrics, load_data
@@ -104,8 +103,6 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            setup_wandb(config)
-
     elif config.draft_model_type == "eagle":
         if not checkpoint_path or not os.path.exists(checkpoint_path):
             logger.info("EAGLE checkpoint not found or not specified. Training EAGLE module...")
@@ -122,10 +119,12 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
             config.draft_model = checkpoint_path
 
             del temp_target, temp_eagle
-            import gc
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+    if wandb.run is None:
+        setup_wandb(config)
 
     # 2. Load Target Model
     logger.info(f"Loading target model: {model_name}...")
@@ -190,7 +189,7 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
     else:
         raise ValueError(f"Unsupported draft_model_type: {config.draft_model_type}")
 
-    # 4. Decoding loop
+    # 5. Decoding loop
     predictions = []
     all_metrics: list[dict] = []
     for row_idx, row in enumerate(tqdm(dataset, desc="Decoding")):
@@ -211,7 +210,7 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
             logger.info(f"Prompt {row_idx}: {prompt}")
             logger.info(f"Response {row_idx}: {predicted}\n")
 
-    # 5. Save generated outputs (story gen only)
+    # 6. Save generated outputs (story gen only)
     if config.task == "story_gen":
         out_path = Path(wandb.run.dir) / "outputs.jsonl"  # type:ignore
         with open(out_path, "w", encoding="utf-8") as f:
@@ -220,7 +219,7 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
         logger.info(f"Saved {len(predictions)} outputs to {out_path}")
         wandb.save(str(out_path))
 
-    # 6. Aggregate and log speculative decoding metrics
+    # 7. Aggregate and log speculative decoding metrics
     per_sentence_metrics, summary_metrics = summarize_metrics(
         all_metrics,
         config.gamma,
@@ -232,10 +231,10 @@ def run(config: ExperimentConfig|MedusaConfig|EagleConfig):
     for key in list(wandb.summary.keys()):
         if key.startswith("sentence/") or key == "sentence_idx":
             del wandb.summary[key]
-    log_token_flow([row['source'] for row in dataset], all_metrics, config) # type:ignore
+    log_token_flow([row['source'] for row in dataset], all_metrics, config)  # type:ignore
 
-    # 7. Log evaluation metrics (skipped for tasks without references, e.g. story_gen)
-    eval_metrics = compute_eval_metrics([row['target'] for row in dataset], predictions) # type:ignore
+    # 8. Log evaluation metrics (skipped for tasks without references, e.g. story_gen)
+    eval_metrics = compute_eval_metrics([row['target'] for row in dataset], predictions)  # type:ignore
     if eval_metrics:
         wandb.summary.update(eval_metrics)
 
@@ -337,7 +336,6 @@ if __name__ == "__main__":
     )
     logger.info(f"Loaded {config_cls.__name__}:\n{pprint.pformat(config)}")
 
-    setup_wandb(config)
     try:
         run(config)
     finally:
