@@ -12,6 +12,7 @@
 #SBATCH --mail-type=END,FAIL
 
 export HF_HOME="/scratch/alpine/$USER/.cache/huggingface"
+export CUDA_LAUNCH_BLOCKING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 mkdir -p $HF_HOME
 

@@ -178,13 +178,24 @@ def compute_loss(madusa_model: torch.nn.Module, batch: dict[str, Any], device: t
 @torch.no_grad()
 def _compute_eval_loss(student: torch.nn.Module, eval_dataloader: DataLoader, device: torch.device) -> float:
     student.eval()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     total_loss = 0.0
     count = 0
-    for batch in eval_dataloader:
+
+    max_eval_batches = 50
+    for i, batch in enumerate(eval_dataloader):
+        if i >= max_eval_batches:
+            break
         loss = compute_loss(student, batch, device)
         total_loss += loss.item()
         count += 1
+
     student.train()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return total_loss / max(count, 1)
 
 
@@ -291,7 +302,7 @@ def run_medusa_training(config: Any):
         shuffle=True,
         pin_memory=(device.type == "cuda"),
         collate_fn=collate_fn,
-        num_workers=2,
+        num_workers=0,
     )
     eval_dataloader = DataLoader(
         eval_dataset,  # type: ignore[arg-type]
