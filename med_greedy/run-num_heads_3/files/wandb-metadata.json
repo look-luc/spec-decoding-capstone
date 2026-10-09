@@ -1,0 +1,83 @@
+{
+  "os": "Linux-4.18.0-477.27.1.el8_8.x86_64-x86_64-with-glibc2.28",
+  "python": "CPython 3.13.7",
+  "startedAt": "2026-10-09T01:15:38.919082Z",
+  "args": [
+    "experiments/med_greedy.cfg"
+  ],
+  "program": "/projects/lude4390/spec-decoding-capstone/run.py",
+  "codePath": "run.py",
+  "codePathLocal": "run.py",
+  "email": "lude4390@colorado.edu",
+  "root": "/projects/lude4390/spec-decoding-capstone",
+  "host": "bgpu-g4-18.rc.int.colorado.edu",
+  "executable": "/projects/lude4390/spec-decoding-capstone/.venv/bin/python3",
+  "cpu_count": 64,
+  "cpu_count_logical": 128,
+  "gpu": "NVIDIA L40",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "34342961152",
+      "used": "9260855296"
+    }
+  },
+  "memory": {
+    "total": "269483859968"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA L40",
+      "memoryTotal": "48305799168",
+      "cudaCores": 18176,
+      "architecture": "Ada",
+      "uuid": "GPU-5d652519-40c8-bee4-422c-9cf1af7354be"
+    }
+  ],
+  "cudaVersion": "12.4",
+  "slurm": {
+    "cluster_name": "blanca",
+    "conf": "/etc/slurm/slurm.conf",
+    "cpus_on_node": "2",
+    "cpus_per_task": "2",
+    "export_env": "NONE",
+    "get_user_env": "1",
+    "gpus_on_node": "1",
+    "gtids": "0",
+    "job_account": "blanca-clearlab2",
+    "job_cpus_per_node": "2",
+    "job_end_time": "1791527101",
+    "job_gid": "1232369",
+    "job_gpus": "1",
+    "job_id": "28672948",
+    "job_name": "specdec_framework",
+    "job_nodelist": "bgpu-g4-18",
+    "job_num_nodes": "1",
+    "job_partition": "blanca-clearlab2",
+    "job_qos": "blanca-clearlab2",
+    "job_start_time": "1791508501",
+    "job_uid": "1232369",
+    "job_user": "lude4390",
+    "jobid": "28672948",
+    "localid": "0",
+    "mem_per_node": "65536",
+    "nnodes": "1",
+    "nodeid": "0",
+    "nodelist": "bgpu-g4-18",
+    "nprocs": "1",
+    "ntasks": "1",
+    "oom_kill_step": "0",
+    "prio_process": "0",
+    "procid": "0",
+    "scratch": "/scratch/local/28672948",
+    "script_context": "prolog_task",
+    "submit_dir": "/projects/lude4390/spec-decoding-capstone/scripts",
+    "submit_host": "login-ci3",
+    "task_pid": "446136",
+    "tasks_per_node": "1",
+    "topology_addr": ".blanca-g4-gpu.bgpu-g4-18",
+    "topology_addr_pattern": "switch.switch.node",
+    "tres_per_task": "cpu=2"
+  },
+  "writerId": "gpecj5tm6z58yg5lftxck67275x8wdma"
+}
