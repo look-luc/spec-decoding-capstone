@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --partition=al40
+#SBATCH --partition=aa100
 #SBATCH --qos=gpu-normal
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
