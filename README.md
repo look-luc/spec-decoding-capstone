@@ -16,9 +16,13 @@
 ### Running experiments
 ##### For `train_heads`
 - [ ] Test 4, 5 and 3 heads
+  - [ ] Run greedy with these values
+  - [ ] Run sample with these values
 
 ##### For `train_eagle`
 - [ ] Configure the tree draft head parameters, sequence truncation length, and hidden state feature extraction setup
+  - [ ] Run greedy with these values
+  - [ ] Run sample with these values
 
 ### Running Experimental Benchmarks & Evaluation
 - [ ] Medusa Spec Decoding
