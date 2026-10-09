@@ -15,7 +15,7 @@
 
 ### Running experiments
 ##### For `train_heads`
-- [ ] Test 8 and 16 heads
+- [ ] Test 4, 5 and 3 heads
 
 ##### For `train_eagle`
 - [ ] Configure the tree draft head parameters, sequence truncation length, and hidden state feature extraction setup
