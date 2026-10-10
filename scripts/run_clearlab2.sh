@@ -39,7 +39,7 @@ PY
 
 cd ..
 
-uv run python run.py "$1" "${@:2}" --output_dir "$LOCAL_OUTPUT_DIR"
+uv run python run.py "$1" "${@:2}"
 
 PROJECT_DIR="/projects/$USER/spec-decoding-capstone"
 echo "Copying outputs back to $PROJECT_DIR..."
