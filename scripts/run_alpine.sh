@@ -6,15 +6,22 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=05:10:00
+#SBATCH --time=7:30:00
 #SBATCH --output=/projects/%u/spec-decoding-capstone/logs/%j.log
 #SBATCH --job-name=specdec_l40
 #SBATCH --account=ucb-general
 #SBATCH --mail-type=END,FAIL
 
+SLURM_TMPDIR="${SLURM_SCRATCH:-/tmp/$USER/scratch}"
 export HF_HOME="/scratch/alpine/$USER/.cache/huggingface"
+export CUDA_LAUNCH_BLOCKING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 mkdir -p $HF_HOME
+
+# 1. Define local scratch directories for active logging and checkpoints
+export LOCAL_OUTPUT_DIR="$SLURM_TMPDIR/outputs"
+export WANDB_DIR="$SLURM_TMPDIR/wandb"
+mkdir -p "$LOCAL_OUTPUT_DIR" "$WANDB_DIR"
 
 module load uv
 uv sync
@@ -33,4 +40,15 @@ PY
 
 cd ..
 
-uv run python run.py "$1" "${@:2}"
+uv run python run.py "$1" "${@:2}" --output_dir "$LOCAL_OUTPUT_DIR"
+
+PROJECT_DIR="/projects/$USER/spec-decoding-capstone"
+echo "Copying outputs back to $PROJECT_DIR..."
+mkdir -p "$PROJECT_DIR/outputs"
+cp -r "$LOCAL_OUTPUT_DIR"/* "$PROJECT_DIR/outputs/"
+
+if [ -d "$WANDB_DIR" ]; then
+    cp -r "$WANDB_DIR" "$PROJECT_DIR/"
+fi
+
+echo "Job execution and file synchronization complete."
