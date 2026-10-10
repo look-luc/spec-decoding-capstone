@@ -2,25 +2,32 @@ import torch
 import torch.nn as nn
 
 
-class medusa_heads(nn.Module):
+class MedusaHead(nn.Module):
+    """
+    A 2-layer MLP head with a residual connection and SiLU non-linearity
+    for higher-capacity multi-token drafting.
+    """
 
     def __init__(
         self,
-        in_features: int,
-        out_features: int,
-        device: torch.device | None = None,
-        dtype: torch.dtype | None = None,
+        hidden_size: int,
+        vocab_size: int,
+        dtype: torch.dtype = torch.float32,
     ) -> None:
         super().__init__()
-        # Initialize directly on target device & dtype to avoid FP32 memory spike
-        self.linear = nn.Linear(
-            in_features, out_features, bias=False, device="cpu", dtype=dtype
+        # Intermediate projection layer keeping hidden_size dimension
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size, bias=False, dtype=dtype),
+            nn.SiLU(),
         )
-        if device != "cpu" and device is not None:
-            self.linear = self.linear.to(device)
+        # Final projection to vocabulary size
+        self.proj = nn.Linear(hidden_size, vocab_size, bias=False, dtype=dtype)
 
-    def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
-        return self.linear(hidden_state)
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # Residual connection over the intermediate hidden projection
+        residual = hidden_states
+        hidden_states = self.mlp(hidden_states) + residual
+        return self.proj(hidden_states)
 
 
 class madusa(nn.Module):
@@ -39,15 +46,24 @@ class madusa(nn.Module):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+        # Instantiate MLP-based Medusa heads
         self.heads = nn.ModuleList([
-            nn.Linear(hidden_size, self.vocab_size, bias=False, dtype=base_dtype)
+            MedusaHead(
+                hidden_size=hidden_size,
+                vocab_size=self.vocab_size,
+                dtype=base_dtype,
+            )
             for _ in range(num_heads)
         ])
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def get_hidden_states(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    def get_hidden_states(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor
+    ) -> torch.Tensor:
         """Runs the base model forward pass to extract last hidden states."""
         outputs = self.base_model(
             input_ids=input_ids,
@@ -68,14 +84,17 @@ class madusa(nn.Module):
     def forward(self, hidden_states=None, input_ids=None, **kwargs):
         if hidden_states is None:
             if input_ids is None:
-                raise ValueError("Must provide either hidden_states or input_ids to Medusa module.")
+                raise ValueError(
+                    "Must provide either hidden_states or input_ids to Medusa"
+                    " module."
+                )
             with torch.no_grad():
                 outputs = self.base_model(
-                    input_ids=input_ids,
-                    output_hidden_states=True,
-                    **kwargs
+                    input_ids=input_ids, output_hidden_states=True, **kwargs
                 )
             hidden_states = outputs.hidden_states[-1]
 
-        logits = torch.stack([head(hidden_states) for head in self.heads], dim=0)
+        logits = torch.stack(
+            [head(hidden_states) for head in self.heads], dim=0
+        )
         return logits

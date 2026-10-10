@@ -111,20 +111,16 @@ def setup_wandb(config: Any):
 
 
 def _build_scheduler(optimizer: optim.Optimizer, config: Any) -> LambdaLR:
-    max_steps = getattr(config, "max_steps", 3000)
-    warmup_ratio = getattr(config, "warmup_ratio", 0.1)
-    warmup_steps = max(1, int(max_steps * warmup_ratio))
-    hf_schedule = getattr(config, "hf_schedule", "constant")
+    max_steps = getattr(config, "max_steps", 225)
+    warmup_steps = getattr(config, "warmup_steps", 20)
 
     def lr_lambda(current_step: int) -> float:
         if current_step < warmup_steps:
-            return current_step / warmup_steps
-        if hf_schedule == "heuristic":
-            return 1.0
-        progress = (current_step - warmup_steps) / max(1, max_steps - warmup_steps)
-        if hf_schedule == "cosine":
-            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
-        return max(0.0, 1.0 - progress)
+            return float(current_step) / float(max(1, warmup_steps))
+
+        progress = float(current_step - warmup_steps) / float(max(1, max_steps - warmup_steps))
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return max(0.2, cosine_decay)
 
     return LambdaLR(optimizer, lr_lambda)
 
