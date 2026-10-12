@@ -300,6 +300,8 @@ def speculative_decode(
             else:
                 draft_input_ids = generated_tokens[:, cur_gen_idx - 1 : cur_gen_idx]
 
+            if draft_start:
+                torch.cuda.synchronize()
             _ = draft_start and draft_start.record()
             if draft_is_hybrid:
                 # After a fully accepted round the drafter is missing [d_gamma, bonus]. Feed
@@ -608,7 +610,7 @@ def sample(logprobs: torch.Tensor, mode: Literal["greedy", "sample"]):
     """Sample a token index from (already filtered) log-probs."""
     if mode == "greedy":
         return logprobs.argmax(dim=-1)
-    return torch.distributions.Categorical(logits=logprobs).sample()
+    return torch.distributions.Categorical(logits=logprobs, validate_args=False).sample()
 
 
 def speculative_decode_different_tokenizers():
@@ -643,7 +645,7 @@ def apply_top_p(logits: torch.Tensor, p: float) -> torch.Tensor:
     if p >= 1.0:
         return logits
 
-    sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+    sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1, stable=True)
     cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
     sorted_indices_to_remove = cumulative_probs > p
 
@@ -671,16 +673,14 @@ def apply_repetition_penalty(
 
     for b in range(logits.size(0)):
         # window_counts = torch.nn.functional.one_hot(context_ids[b]).sum(dim=-2)
-        max_vocab_index = torch.max(context_ids[b]).item() + 1
-        max_vocab_index = cast(int, max_vocab_index)
-        window_counts = torch.zeros(max_vocab_index, dtype=torch.long, device=context_ids[b].device)
+        window_counts = torch.zeros(logits.size(-1), dtype=torch.long, device=context_ids[b].device)
         window_counts.scatter_add_(dim=0, index=context_ids[b], src=torch.ones_like(context_ids[b]))
 
         per_token_penalty = penalty ** window_counts
-        logits[b,:max_vocab_index] = torch.where(
-            logits[b,:max_vocab_index] > 0,
-            logits[b,:max_vocab_index] / per_token_penalty,
-            logits[b,:max_vocab_index] * per_token_penalty,
+        logits[b] = torch.where(
+            logits[b] > 0,
+            logits[b] / per_token_penalty,
+            logits[b] * per_token_penalty,
         )
     return logits
 
