@@ -30,7 +30,7 @@
 - [ ] EAGLE Spec Decoding
   - [ ] Set `--max_new_tokens` and update `TREE_CHOICES`
     - ties to the eagle-1 and eagle-2 above
-## [ ] See if there's a way to get better results
+## See if there's a way to get better results
 - [ ] test the increase of steps for medusa heads
 - [ ] other areas for medusa
 ## Setup
