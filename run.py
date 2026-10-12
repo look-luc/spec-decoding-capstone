@@ -106,7 +106,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
     elif config.draft_model_type == "eagle":
         if not checkpoint_path or not os.path.exists(checkpoint_path):
             logger.info("EAGLE checkpoint not found or not specified. Training EAGLE module...")
-            temp_target, _ = load_model(str(model_name), device=config.device)
+            temp_target, temp_tokenizer = load_model(str(model_name), device=config.device) # <--- Unpack tokenizer here
             temp_eagle = EagleModule(
                 vocab_size=temp_target.config.vocab_size,
                 embed_dim=temp_target.config.hidden_size,
@@ -114,11 +114,11 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
                 num_heads=config.num_heads
             ).to(config.device)
 
-            run_eagle_training(config=config, base_model=temp_target, eagle_module=temp_eagle)
+            run_eagle_training(config=config, base_model=temp_target, eagle_module=temp_eagle, tokenizer=temp_tokenizer) # <--- Pass tokenizer
             checkpoint_path = os.path.join(config.output_dir, "eagle_module_final.pt")
             config.draft_model = checkpoint_path
 
-            del temp_target, temp_eagle
+            del temp_target, temp_eagle, temp_tokenizer
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

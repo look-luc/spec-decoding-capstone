@@ -37,18 +37,21 @@ class EagleConfig:
     max_samples_mono: int = DEFAULT_MAX_MONO
     max_new_tokens: int = 128
     story_seed: int | None = 0
-    device: str = "auto"
+    device: str = "cuda"
+    dataset_path: str | None = None
 
+    learning_rate:float=2e-5
+    batch_size:int = 32
+    grad_accum_steps:int = 2
+    eval_every:int = 50
+    max_steps: int = 500
     wandb_tag: str | None = None
+    output_dir: str = "checkpoints"
     wandb_project: str = WANDB_PROJECT
 
     def __post_init__(self):
         if self.draft_model == "None":
             self.draft_model = None
-
-        if self.draft_model_type == 'neural':
-            assert self.gamma > 0
-            assert self.draft_model is not None
 
         if isinstance(self.story_seed, str):
             self.story_seed = None if self.story_seed == "None" else int(self.story_seed)

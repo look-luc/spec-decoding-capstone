@@ -8,6 +8,8 @@ import torch.optim as optim
 from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]
 from torch.utils.data import DataLoader
 
+from src.data.dataset import assemble_dataset
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,15 +74,31 @@ def save_eagle_checkpoint(eagle_module: nn.Module, output_dir: str, label: str =
     logger.info(f"Saved EAGLE weights to: {save_path}")
 
 
-def run_eagle_training(config, base_model, eagle_module):
+def run_eagle_training(config, base_model, eagle_module, tokenizer):
     """Execution loop for EAGLE training/distillation."""
     device = next(eagle_module.parameters()).device
     os.makedirs(config.output_dir, exist_ok=True)
 
     optimizer = optim.AdamW(eagle_module.parameters(), lr=config.learning_rate)
 
-    dataset = datasets.Dataset.from_parquet(config.dataset_path)
-    dataset = dataset.filter(lambda r: len(r["logprobs"]) > 0)
+    lang_code = getattr(config, "language_code", "en")
+    dataset_type = getattr(config, "dataset_type", "bi")
+    max_samples = max(getattr(config, "max_samples", 7000), 6000)
+
+    logger.info(f"Assembling dataset in memory for '{lang_code}' (type={dataset_type}, max_samples={max_samples})...")
+    splits = assemble_dataset(
+        lang_code=lang_code,
+        type=dataset_type,
+        tokenizer=tokenizer,
+        max_samples=max_samples,
+    )
+
+    dataset = splits["train"]
+    if "logprobs" in dataset.column_names:
+        dataset = dataset.filter(lambda r: r.get("logprobs") is not None and len(r["logprobs"]) > 0)
+
+    if len(dataset) == 0:
+        raise ValueError("The training dataset is empty after filtering! Check if dataset assembly generated the expected fields.")
 
     def collate_fn(batch):
         bs = len(batch)
@@ -112,7 +130,7 @@ def run_eagle_training(config, base_model, eagle_module):
 
     dataloader = DataLoader(
         dataset,
-        batch_size=config.batch_size,
+        batch_size=getattr(config, "batch_size", 16),
         shuffle=True,
         collate_fn=collate_fn,
     )
@@ -120,7 +138,7 @@ def run_eagle_training(config, base_model, eagle_module):
     scaler = GradScaler("cuda", enabled=(device.type == "cuda"))
     eagle_module.train()
 
-    for epoch in range(config.epochs):
+    for epoch in range(config.max_steps):
         for step, batch in enumerate(dataloader):
             optimizer.zero_grad()
             loss = compute_eagle_loss(eagle_module, base_model, batch, device=device)
