@@ -15,6 +15,8 @@ from tqdm import tqdm
 
 import wandb
 
+from src.config.config import WANDB_ENTITY, WANDB_PROJECT
+
 logging.basicConfig(
     level=logging.INFO,
     format="\033[90m%(asctime)s \033[36m[%(levelname)s] \033[1;33m%(module)s\033[0m: %(message)s",
@@ -50,7 +52,7 @@ langs = ["amh","ber","chr","grn","haw","ibo","npi","oci","que","yor","zgh"]
 # the resourcedness / bits-per-char scatters), where the point is how the metric
 # moves across the resourcedness range, but not in the per-language setting
 # comparisons, which are about the low-resource set only.
-HIGH_RESOURCE_LANGS = ["zh"]
+HIGH_RESOURCE_LANGS = ["zh", "deu", "spa", "hin", "eng"]
 comparison_langs = langs + HIGH_RESOURCE_LANGS
 
 PALETTE = ['#0072B2', '#D55E00', '#009E73', '#F0E442', '#CC79A7']
@@ -134,7 +136,7 @@ def _detect_family(target_model: str) -> str:
 def load_real_data() -> pd.DataFrame:
     records = []
     logger.info("Loading runs")
-    for run in tqdm(wandb.Api().runs(path="lecs-general/speculative decoding v2", lazy=False, filters={"state": "finished"})):
+    for run in tqdm(wandb.Api().runs(path=f"{WANDB_ENTITY}/{WANDB_PROJECT}", lazy=False, filters={"state": "finished", "tags": {"$in": ["final"]}})):
         family = _detect_family(run.config["target_model"])
         draft_model = run.config["draft_model"]
         # N-Gram runs are flagged by draft_model_type. Qwen leaves draft_model
@@ -162,10 +164,14 @@ def load_real_data() -> pd.DataFrame:
             "model_size": size,
             "task": run.config["task"],
             **run.summary,
+            "created_at": run.created_at,
         })
     df = pd.DataFrame.from_records(records)
     del records
     df = df[df["sentence_avg_acceptance_rate"].notna()]
+    # A preempted job restarts from its first gamma, so a cell can have several
+    # finished runs; keep the most recent
+    df = df.sort_values("created_at").drop_duplicates(["family", "language", "draft_model", "task", "gamma"], keep="last")
     # Include family because the "ngram" draft label is shared across families
     # and would otherwise collide.
     best_gamma = df.groupby(["family", "language", "draft_model", "task"])["sentence_avg_acceptance_rate"].idxmax()
@@ -620,11 +626,13 @@ def _ngram_vs_distilled_scatter(data: pd.DataFrame, task: str, filename: str, fa
 def _resourcedness_order(present: list[str], counts: pd.DataFrame) -> list[str]:
     """Languages left to right in the same order the resourcedness plots lay
     them out: the unknown counts (-1) first, then ascending token count. A
-    language absent from the counts table is treated as unknown."""
+    language absent from the counts table (English, which FineWeb2 doesn't
+    cover) goes last, as the high-resource reference."""
     words = counts.set_index("language_code")["words"]
-    unknown = [lang for lang in present if words.get(lang, -1) <= 0]
-    known = sorted((lang for lang in present if words.get(lang, -1) > 0), key=lambda l: words[l])
-    return unknown + known
+    absent = [lang for lang in present if lang not in words.index]
+    unknown = [lang for lang in present if lang in words.index and words[lang] <= 0]
+    known = sorted((lang for lang in present if lang in words.index and words[lang] > 0), key=lambda l: words[l])
+    return unknown + known + absent
 
 
 def _baseline_speedup_bars(data: pd.DataFrame, counts: pd.DataFrame, task: str, filename: str):
