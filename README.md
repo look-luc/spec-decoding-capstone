@@ -15,9 +15,9 @@
 
 ### Running experiments
 ##### For `train_heads`
-- [ ] Test 4, 5 and 3 heads
-  - [ ] Run greedy with these values
-  - [ ] Run sample with these values
+- [x] Test 4, 5 and 3 heads
+  - [x] Run greedy with these values
+  - [x] Run sample with these values
 
 ##### For `train_eagle`
 - [ ] Configure the tree draft head parameters, sequence truncation length, and hidden state feature extraction setup
@@ -25,8 +25,8 @@
   - [ ] Run sample with these values
 
 ### Running Experimental Benchmarks & Evaluation
-- [ ] Medusa Spec Decoding
-  - [ ] Adjust candidate tree tree-structure choices to `num_heads`
+- [x] Medusa Spec Decoding
+  - [x] Adjust candidate tree tree-structure choices to `num_heads`
 - [ ] EAGLE Spec Decoding
   - [ ] Set `--max_new_tokens` and update `TREE_CHOICES`
     - ties to the eagle-1 and eagle-2 above
