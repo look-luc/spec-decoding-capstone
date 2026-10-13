@@ -6,6 +6,7 @@ import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from src.config.config import ExperimentConfig
+from src.models import eagle
 from src.models.eagle import EagleModule
 from src.models.madusa import madusa
 from src.n_gram import NGramModel
@@ -36,7 +37,8 @@ def generate_output(
 
     # Use our custom spec dec implementation
     if config.draft_model_type != "none" and not config.use_hf_assisted and not (
-        isinstance(draft_model, madusa) or config.draft_model_type.lower() == "medusa"
+        isinstance(draft_model, madusa) or config.draft_model_type.lower() == "medusa"\
+        and isinstance(draft_model, eagle) or config.draft_model_type.lower() == "eagle"
     ):
         if not same_tokenizer:
             raise NotImplementedError("SD with different tokenizers not implemented.")

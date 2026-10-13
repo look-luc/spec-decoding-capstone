@@ -434,10 +434,10 @@ def spec_decode_eagle(
         start_time = get_time()
 
         # Preload kv cache for prompts
-        target_out = target_model(input_ids, use_cache=True)
+        target_out = target_model(input_ids, use_cache=True, output_hidden_states=True)
         target_kv_cache = target_out.past_key_values
 
-        last_hidden = target_out.last_hidden_state[:, -1, :]
+        last_hidden = target_out.hidden_states[-1][:, -1, :]
         first_logits = penalize_logits(target_out.logits[:, -1, :], confirmed_len=cur_gen_idx)
         first_logprobs = apply_filters(torch.log_softmax(first_logits))
         first_token = select_index(first_logprobs)
