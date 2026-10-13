@@ -201,7 +201,7 @@ def eagle_draft_tree_expansion(
     eagle_module,
     root_hidden,
     root_token_id,
-    tree_choices:list[int],
+    tree_choice:list[int],
     top_k,
     top_p,
     repetition_penalty,
@@ -224,8 +224,8 @@ def eagle_draft_tree_expansion(
     tree_nodes.append(root_node)
     active_parents = [root_node]
 
-    for depth in range(tree_choices):
-        branch_factor = tree_choices[depth]
+    for depth in range(len(tree_choice)):
+        branch_factor = tree_choice[depth]
         next_parents = []
 
         for parent in active_parents:
@@ -250,7 +250,7 @@ def eagle_draft_tree_expansion(
                 repetition_penalty
             )
             draft_logorbs = filter_logprobs(
-                torch.log_softmax(penalized_logits),
+                torch.log_softmax(penalized_logits, dim=-1),
                 top_k=top_k,
                 top_p=top_p
             )
@@ -345,13 +345,6 @@ def spec_decode_eagle(
         tree_choices_arr = [1, 8, 4, 2]
     elif tree_choices.lower() == "custom":
         tree_choices_arr = [1, 4, 2, 3]
-
-    if eagle_module is None:
-        eagle_module = EagleModule(
-            vocab_size=target_model.config.vocab_size,
-            embed_dim=target_model.config.hidden_size,
-            hidden_dim=target_model.config.hidden_size
-        )
 
     def apply_filters(logprobs: torch.Tensor) -> torch.Tensor:
         return filter_logprobs(logprobs, top_k=top_k, top_p=top_p)
@@ -454,7 +447,7 @@ def spec_decode_eagle(
                 eagle_module=eagle_module,
                 root_hidden=last_hidden,
                 root_token_id=curr_token,
-                tree_choices=tree_choices_arr,
+                tree_choice=tree_choices_arr,
                 top_k=top_k,
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,

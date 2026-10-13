@@ -76,20 +76,7 @@ def generate_output(
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         return cast(str, decoded).strip(), metrics
     if isinstance(draft_model, EagleModule) or config.draft_model_type.lower() == "eagle":
-        if isinstance(draft_model, EagleModule):
-            eagle_module = draft_model
-        else:
-            eagle_module = EagleModule(
-                vocab_size=model.config.vocab_size,
-                embed_dim=model.config.hidden_size,
-                hidden_dim=model.config.hidden_size,
-                num_heads=config.num_heads,
-            ).to(config.device)
-
-            checkpoint_path = config.draft_model or os.path.join(getattr(config, "output_dir", "./output"), "eagle_module_final.pt")
-            if os.path.exists(checkpoint_path):
-                eagle_state_dict = torch.load(checkpoint_path, map_location=config.device)
-                eagle_module.load_state_dict(eagle_state_dict)
+        eagle_module = draft_model
 
         output_ids, metrics = spec_decode_eagle(
             target_model=model,
