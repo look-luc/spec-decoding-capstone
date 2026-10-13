@@ -277,7 +277,7 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
                     "train/lr": current_lr,
                     "train/grad_norm": unclipped_grad_norm,
                     "train/epoch": global_step,
-                    "train/step": global_step
+                    "step": global_step
                 })
 
     save_eagle_checkpoint(eagle_module, config.output_dir, label="final")

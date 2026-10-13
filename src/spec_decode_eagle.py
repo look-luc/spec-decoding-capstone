@@ -384,13 +384,12 @@ def spec_decode_eagle(
         """
         if repetition_penalty == 1.0:
             return logits
-        # Build context: confirmed portion of generated_tokens + any draft tokens
-        ctx = generated_tokens[0, max(
-            0, cur_gen_idx-repetition_penalty_window
+
+        ctx = generated_tokens[:, max(
+            0, cur_gen_idx - repetition_penalty_window
         ):cur_gen_idx]
         if draft_so_far is not None and draft_so_far.size(-1) > 0:
             ctx = torch.cat([ctx, draft_so_far], dim=-1)
-        # Slide to the last `repetition_penalty_window` tokens
         ctx = ctx[:, -repetition_penalty_window:]
         return apply_repetition_penalty(logits, ctx, repetition_penalty)
 
@@ -439,7 +438,7 @@ def spec_decode_eagle(
 
         last_hidden = target_out.hidden_states[-1][:, -1, :]
         first_logits = penalize_logits(target_out.logits[:, -1, :], confirmed_len=cur_gen_idx)
-        first_logprobs = apply_filters(torch.log_softmax(first_logits))
+        first_logprobs = apply_filters(torch.log_softmax(first_logits, dim=-1))
         first_token = select_index(first_logprobs)
 
         generated_tokens[:, cur_gen_idx] = first_token
