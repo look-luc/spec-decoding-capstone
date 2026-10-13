@@ -84,7 +84,7 @@ class NGramModel:
         device = self._device or torch.device("cpu")
         context_key = tuple(tokens[-(self.n - 1) :])
         if len(tokens) < self.n - 1 or context_key not in self.conditional_logprobs:
-            return self._full_buf
+            return self._full_buf.clone()
 
         if self._last_modified is not None:
             self._logprob_buf.index_fill_(0, self._last_modified, float("-inf"))

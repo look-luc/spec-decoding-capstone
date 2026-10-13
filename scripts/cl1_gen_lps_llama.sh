@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --gres=gpu:h100_3g.40gb
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=16G
+#SBATCH --time=3-00:00:00
+#SBATCH --output=logs/%j.log
+#SBATCH --job-name=specdec
+#SBATCH --partition=blanca-clearlab1
+#SBATCH --account=blanca-clearlab1
+#SBATCH --qos=blanca-clearlab1
+#SBATCH --mail-type=END,FAIL
+
+export HF_HOME="/scratch/alpine/$USER/.cache/huggingface"
+mkdir -p $HF_HOME
+export WANDB_DIR="/scratch/alpine/$USER/wandb"
+mkdir -p $WANDB_DIR
+
+module load uv
+uv sync
+
+for lang in amh ber chr grn haw ibo npi oci que yor zgh
+do
+    uv run scripts/generate_teacher_logprobs.py "$1" \
+        -o language_code=$lang \
+            teacher_model="meta-llama/Llama-3.2-3B-Instruct"
+done

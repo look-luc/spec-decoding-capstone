@@ -30,6 +30,12 @@ def get_raw_url(url: str) -> str:
         return url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
     return url
 
+LANGUAGES = [
+    "amh", "ber", "chr", "grn", "haw", "ibo", "npi", "oci","que", "yor", "zgh"
+]
+
+# High/mid-resource comparison languages. English has no bilingual data
+HIGH_RESOURCE_LANGUAGES = ["eng", "deu", "spa", "hin", "zh"]
 
 def get_language_name(lang_code: str) -> str:
     """
@@ -44,7 +50,7 @@ def get_language_name(lang_code: str) -> str:
             if row["Code"].strip().lower() == lang_code:
                 return row["Language"].strip()
     # Fallback: return the code itself if not found
-    return lang_code
+    raise ValueError()
 
 
 mono_features = Features({"text": Value("string"), "origin": Value("string")})
@@ -132,6 +138,8 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
     dataset_list = []
     for _, row in paths.iterrows():
         path = row["hugging face"]
+        if "aya_dataset" in path:
+            continue
         assert isinstance(path, str)
 
         if str(path).startswith("http"):
@@ -158,12 +166,14 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
                     ds = load_dataset(repo, config, split=split, streaming=True)
                     assert isinstance(ds, IterableDataset)
                     break
-                except:
+                except Exception as e:
+                    logger.warning(e)
                     continue
             else:
                 raise ValueError(f"No split matching {[split_to_load, 'full', lang_code]} in {repo}")
             if repo == 'Helsinki-NLP/opus-100':
-                ds = ds.map(lambda r: {"English": r['translation']['en'], language: r['translation'][lang_code]})
+                # Pair configs are keyed by 2-letter codes (e.g. 'de', 'hi'), so take whichever side isn't English
+                ds = ds.map(lambda r: {"English": r['translation']['en'], language: next(v for k, v in r['translation'].items() if k != 'en')})
 
         if type == 'mono':
             ds = standardize_columns_mono(ds, language, lang_code, path)
