@@ -169,7 +169,8 @@ def get_ancestor_tokens(node):
 
 def build_eagle_tree_attn(tree_nodes, base_seq_len):
     num_nodes = len(tree_nodes)
-    attn_mask = [[float('-inf')] * num_nodes for _ in range(num_nodes)]
+    total_len = base_seq_len + num_nodes
+    attn_mask = [[float('-inf')] * total_len for _ in range(num_nodes)]
     pos_ids = [None] * num_nodes
 
     for i in range(num_nodes):
@@ -181,9 +182,12 @@ def build_eagle_tree_attn(tree_nodes, base_seq_len):
 
         pos_ids[i] = base_seq_len + depth
 
+        for col in range(base_seq_len):
+            attn_mask[i][col] = 0.0
+
         cur_ancestor = node_i
         while cur_ancestor is not None:
-            attn_mask[i][cur_ancestor.index] = 0.0
+            attn_mask[i][base_seq_len + cur_ancestor.index] = 0.0
             cur_ancestor = cur_ancestor.parent
 
     return attn_mask, pos_ids
@@ -495,13 +499,22 @@ def spec_decode_eagle(
                     per_position_draft_count[node.depth - 1] += 1
 
             flattened_tokens = extract_token_ids(tree_nodes=tree_nodes, device=device)
+            base_seq_len = get_kv_cache_length(target_kv_cache)
+
             tree_attn_mask_list, tree_pos_ids_list = build_eagle_tree_attn(
                 tree_nodes=tree_nodes,
                 base_seq_len=base_seq_len
             )
 
-            tree_pos_ids = torch.tensor(tree_pos_ids_list, dtype=torch.long, device=device).unsqueeze(0)
-            tree_attn_mask = torch.tensor(tree_attn_mask_list, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+            tree_pos_ids = torch.tensor(
+                tree_pos_ids_list,
+                dtype=next(target_model.parameters()).dtype,
+                device=device
+            ).unsqueeze(0)
+            tree_attn_mask = torch.tensor(
+                tree_attn_mask_list,
+                dtype=next(target_model.parameters()).dtype, device=device
+            ).unsqueeze(0).unsqueeze(0)
             target_out = target_model(
                 input_ids=flattened_tokens,
                 attention_mask=tree_attn_mask,
@@ -512,13 +525,13 @@ def spec_decode_eagle(
             )
 
             target_raw_logits = target_out.logits
-            verifier_hiddens = target_out.last_hidden_state
+            verifier_hiddens = target_out.hidden_states[-1]
 
             penalize_target_logits = apply_repetition_penalty_batched(
                 logits=target_raw_logits,
-                generated_tokens=torch.concat(
-                    generated_tokens[:, :cur_gen_idx],
-                    flattened_tokens
+                generated_tokens=torch.cat(
+                    [generated_tokens[:, :cur_gen_idx], flattened_tokens],
+                    dim=-1
                 ),
                 confirmed_len=cur_gen_idx,
                 penalty=repetition_penalty,
@@ -526,7 +539,8 @@ def spec_decode_eagle(
             )
             target_logprobs = filter_logprobs(
                 torch.log_softmax(
-                    penalize_target_logits
+                    penalize_target_logits,
+                    dim=-1
                 ),
                 top_k=top_k,
                 top_p=top_p
@@ -758,15 +772,13 @@ def apply_repetition_penalty_batched(
         unused_idx = cast(int, unused_idx)
         window_tokens = generated_tokens[b].expand(seq_len + 1, seq_len).masked_fill(~mask, unused_idx)
 
-        # Old way, OOM:
-        # window_counts = torch.nn.functional.one_hot(window_tokens).sum(dim=1)[...,:-1] # cut off the unused one
-
         window_counts = torch.zeros(window_tokens.size(0), unused_idx + 1, dtype=torch.long, device=window_tokens.device)
         window_counts.scatter_add_(dim=1, index=window_tokens, src=torch.ones_like(window_tokens))
         window_counts  = window_counts[...,:-1] # cut off the unused vocab item
 
         per_token_penalty = penalty ** window_counts
-        per_token_penalty = per_token_penalty[confirmed_len:]
+        num_verify_tokens = logits.size(1)
+        per_token_penalty = per_token_penalty[confirmed_len : confirmed_len + num_verify_tokens]
 
         logits[b,:,:unused_idx] = torch.where(
             logits[b,:,:unused_idx] > 0,
