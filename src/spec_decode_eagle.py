@@ -49,8 +49,15 @@ def any_in_set(tokens, target_set):
     return False
 
 
-def extract_token_ids(tree_nodes):
-    return torch.tensor([node.token_id for node in tree_nodes])
+def extract_token_ids(tree_nodes, device=None):
+    ids = []
+    for node in tree_nodes:
+        tid = node.token_id
+        if isinstance(tid, torch.Tensor):
+            tid = tid.item()
+        ids.append(tid)
+    # Return batched tensor [1, num_nodes] on the correct device
+    return torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)
 
 def extract_all_leaf_paths(tree_nodes):
     leaf_paths = []
@@ -201,7 +208,7 @@ def eagle_draft_tree_expansion(
     eagle_module,
     root_hidden,
     root_token_id,
-    tree_choice:list[int],
+    tree_choice: list[int],
     top_k,
     top_p,
     repetition_penalty,
@@ -211,6 +218,11 @@ def eagle_draft_tree_expansion(
     mode
 ):
     tree_nodes = []
+
+    if root_hidden.ndim > 1:
+        root_hidden = root_hidden.squeeze(0)
+    if root_token_id.ndim > 0:
+        root_token_id = root_token_id.squeeze()
 
     root_node = create_node(
         index=0,
@@ -229,15 +241,29 @@ def eagle_draft_tree_expansion(
         next_parents = []
 
         for parent in active_parents:
-            token_emb = eagle_module.get_embedding(parent.token_id)
-            fused_feat = torch.concat(token_emb, parent.hidden_state, dim=-1)
-            next_hidden = eagle_module.decoder_layer(fused_feat)
+            token_id_tensor = parent.token_id
+            token_id_input = token_id_tensor.unsqueeze(0) if token_id_tensor.ndim == 0 else token_id_tensor
+
+            token_emb = eagle_module.get_embedding(token_id_input).squeeze(0)
+
+            hidden_state = parent.hidden_state
+            if hidden_state.ndim > 1:
+                hidden_state = hidden_state.squeeze(0)
+
+            fused_feat = torch.cat([token_emb, hidden_state], dim=-1)
+            projected = eagle_module.fc_fusion(fused_feat)
+
+            proj_batched = projected.unsqueeze(0).unsqueeze(0)
+            next_hidden_batched = eagle_module.decoder_layer(proj_batched, proj_batched)
+            next_hidden = next_hidden_batched.squeeze(0).squeeze(0)
+
             draft_raw_logits = eagle_module.lm_head(next_hidden)
 
             path_tokens = get_ancestor_tokens(parent)
-            full_context = torch.concat(
-                generated_tokens[0, :cur_gen_idx],
-                path_tokens
+            path_tensor = torch.tensor(path_tokens, dtype=generated_tokens.dtype, device=generated_tokens.device)
+            full_context = torch.cat(
+                [generated_tokens[0, :cur_gen_idx], path_tensor],
+                dim=-1
             )
             penalty_context = sliding_window(
                 full_context,
@@ -245,10 +271,11 @@ def eagle_draft_tree_expansion(
             )
 
             penalized_logits = apply_repetition_penalty(
-                draft_raw_logits,
+                draft_raw_logits.unsqueeze(0),
                 penalty_context,
                 repetition_penalty
-            )
+            ).squeeze(0)
+
             draft_logorbs = filter_logprobs(
                 torch.log_softmax(penalized_logits, dim=-1),
                 top_k=top_k,
@@ -467,16 +494,18 @@ def spec_decode_eagle(
                 if 1 <= node.depth <= max_depth:
                     per_position_draft_count[node.depth - 1] += 1
 
-            flattened_tokens = extract_token_ids(tree_nodes=tree_nodes)
-            tree_attn_mask, tree_pos_ids = build_eagle_tree_attn(
+            flattened_tokens = extract_token_ids(tree_nodes=tree_nodes, device=device)
+            tree_attn_mask_list, tree_pos_ids_list = build_eagle_tree_attn(
                 tree_nodes=tree_nodes,
                 base_seq_len=base_seq_len
             )
 
+            tree_pos_ids = torch.tensor(tree_pos_ids_list, dtype=torch.long, device=device).unsqueeze(0)
+            tree_attn_mask = torch.tensor(tree_attn_mask_list, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
             target_out = target_model(
                 input_ids=flattened_tokens,
                 attention_mask=tree_attn_mask,
-                pos_ids=tree_pos_ids,
+                position_ids=tree_pos_ids,
                 past_key_values=target_kv_cache,
                 use_cache=True,
                 output_hidden_states=True
@@ -539,9 +568,10 @@ def spec_decode_eagle(
             accepted_tokens = [
                 node.token_id for node in best_path
             ]
-            tokens_to_add = torch.concat(
-                accepted_tokens,
-                [bonus_token]
+            accepted_tensor = torch.tensor(accepted_tokens, dtype=torch.int64, device=device)
+            tokens_to_add = torch.cat(
+                [accepted_tensor, bonus_token.view(-1)],
+                dim=-1
             )
 
             new_gen_idx = cur_gen_idx + len(tokens_to_add)
@@ -642,8 +672,9 @@ def apply_top_k(logits: torch.Tensor, k: int) -> torch.Tensor:
     return logits_filtered
 
 def top_k_sampling(logprods, k):
-    sorted_logprobs, sorted_idxs = torch.sort(logprods)
-
+    if logprods.ndim > 1:
+        logprods = logprods.squeeze(0)
+    sorted_logprobs, sorted_idxs = torch.sort(logprods, descending=True, dim=-1)
     top_scores = sorted_logprobs[:k]
     top_token_ids = sorted_idxs[:k]
     return top_scores, top_token_ids
