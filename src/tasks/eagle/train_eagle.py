@@ -1,6 +1,8 @@
 import logging
 import os
+import time
 from dataclasses import asdict
+from typing import Any
 
 import datasets
 import torch
@@ -8,6 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 import wandb
 from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from src.data.dataset import assemble_dataset
@@ -75,6 +78,13 @@ def save_eagle_checkpoint(eagle_module: nn.Module, output_dir: str, label: str =
     torch.save(state_dict, save_path)
     logger.info(f"Saved EAGLE weights to: {save_path}")
 
+def grad_norm(model: torch.nn.Module) -> float:
+    total_norm = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.detach().data.norm(2)
+            total_norm += param_norm.item() ** 2
+    return total_norm ** 0.5
 
 def run_eagle_training(config, base_model, eagle_module, tokenizer):
     device = next(eagle_module.parameters()).device
@@ -164,30 +174,103 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
     scaler = GradScaler("cuda", enabled=(device.type == "cuda"))
     eagle_module.train()
 
+    scheduler = _build_scheduler(optimizer, config)
+    start_step = _restore_training_state(config, optimizer, scheduler, device)
     global_step = 0
     max_steps = getattr(config, "max_steps", 1000)
     log_every = getattr(config, "log_every", 10)
+    step = start_step
+    target_step = start_step + config.max_steps
+    accum_count = 0
+    log_accum_loss = 0.0
+    log_micro_count = 0
+    best_eval_loss = float("inf")
+    start_time = time.time()
 
     while global_step < max_steps:
         for batch_idx, batch in enumerate(dataloader):
+            if global_step>= max_steps:
+                break
             optimizer.zero_grad()
             loss = compute_eagle_loss(eagle_module, base_model, batch, device=device)
 
             if torch.isnan(loss) or loss.item() == 0.0:
                 logger.warning(f"Step {global_step} | Encountered zero or NaN loss. Check target logprobs generation.")
 
-            scaler.scale(loss).backward()
+            scaler.scale(loss / config.grad_accum_steps).backward()
+            accum_count += 1
+            log_accum_loss += loss.item()
+            log_micro_count += 1
+
+            if accum_count < config.grad_accum_steps:
+                continue
+
+            scaler.unscale_(optimizer)
+            unclipped_grad_norm = grad_norm(eagle_module)
+            torch.nn.utils.clip_grad_norm_(eagle_module.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
+            scheduler.step()
+            optimizer.zero_grad()
 
             global_step += 1
 
             # Log to Wandb
             if global_step % log_every == 0:
-                logger.info(f"Step {global_step} | Loss: {loss.item():.4f}")
+                avg_loss = log_accum_loss / log_micro_count
+                current_lr = scheduler.get_last_lr()[0]
+                elapsed = time.time() - start_time
+                logger.info(
+                    f"Step {step} | Loss: {avg_loss:.4f} | "
+                    f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s"
+                )
                 wandb.log({
                     "train/loss": loss.item(),
+                    "train/lr": current_lr,
+                    "train/grad_norm": unclipped_grad_norm,
+                    "train/epoch": global_step,
                     "train/global_step": global_step
                 })
 
     save_eagle_checkpoint(eagle_module, config.output_dir, label="final")
+
+def _restore_training_state(config: Any, optimizer: optim.Optimizer, scheduler: LambdaLR, device: torch.device) -> int:
+    start_step = 0
+    resume_from = getattr(config, "resume_from", None)
+    if resume_from:
+        checkpoint_name = os.path.basename(resume_from)
+        if checkpoint_name.startswith("checkpoint-"):
+            start_step = int(checkpoint_name.split("-")[1])
+
+        opt_path = os.path.join(resume_from, "optimizer.pt")
+        if os.path.exists(opt_path):
+            logger.info(f"Loading optimizer state from {opt_path}")
+            optimizer.load_state_dict(torch.load(opt_path, map_location=device))
+        else:
+            logger.warning("No optimizer state found — learning rates will reset")
+
+        sched_path = os.path.join(resume_from, "scheduler.pt")
+        if os.path.exists(sched_path):
+            logger.info(f"Loading scheduler state from {sched_path}")
+            scheduler.load_state_dict(torch.load(sched_path, map_location=device))
+        elif start_step > 0:
+            logger.warning(
+                f"No scheduler state found — fast-forwarding scheduler to step {start_step}"
+            )
+            for _ in range(start_step):
+                scheduler.step()
+    return start_step
+
+def _build_scheduler(optimizer: optim.Optimizer, config: Any) -> LambdaLR:
+    max_steps = getattr(config, "max_steps", 225)
+    warmup_steps = getattr(config, "warmup_steps", 20)
+
+    def lr_lambda(current_step: int) -> float:
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+
+        progress = float(current_step - warmup_steps) / float(max(1, max_steps - warmup_steps))
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return max(0.2, cosine_decay)
+
+    return LambdaLR(optimizer, lr_lambda)
