@@ -586,21 +586,26 @@ def spec_decode_eagle(
             tokens_to_add = torch.cat(
                 [accepted_tensor, bonus_token.view(-1)],
                 dim=-1
-            )
+            ).unsqueeze(0)
 
-            new_gen_idx = cur_gen_idx + len(tokens_to_add)
+            new_gen_idx = cur_gen_idx + len(tokens_to_add[0])
             generated_tokens[:, cur_gen_idx:new_gen_idx] = tokens_to_add
             cur_gen_idx = new_gen_idx
 
             total_matched_tokens = total_matched_tokens + best_accept_count
             total_draft_tokens = total_draft_tokens + len(tree_nodes) - 1
 
-            target_kv_cache = crop_align_eagle_kv_cache(
-                kv_cache=target_out.past_key_values,
-                accepted_path_nodes=best_path,
-                base_seq_len=base_seq_len
+            # Crop cache back to base_seq_len and natively forward the accepted tokens
+            base_kv_cache = crop_kv_cache(target_out.past_key_values, base_seq_len)
+            final_target_out = target_model(
+                input_ids=tokens_to_add,
+                past_key_values=base_kv_cache,
+                use_cache=True,
+                output_hidden_states=True
             )
-            last_hidden = new_last_hidden
+
+            target_kv_cache = final_target_out.past_key_values
+            last_hidden = final_target_out.hidden_states[-1][:, -1, :]
 
             if tokens_to_add in stop_token_ids:
                 generated_tokens = generated_tokens[:, :cur_gen_idx]
