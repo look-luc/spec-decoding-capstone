@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import time
 from dataclasses import asdict
@@ -64,6 +65,29 @@ def compute_eagle_loss(
 
     return final_loss
 
+@torch.no_grad()
+def _compute_eval_loss(student: torch.nn.Module, base_model: torch.nn.Module, eval_dataloader: DataLoader, device: torch.device) -> float:
+    student.eval()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    total_loss = 0.0
+    count = 0
+
+    max_eval_batches = 50
+    for i, batch in enumerate(eval_dataloader):
+        if i >= max_eval_batches:
+            break
+        loss = compute_eagle_loss(student, base_model, batch, device)
+        total_loss += loss.item()
+        count += 1
+
+    student.train()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return total_loss / max(count, 1)
+
 
 def save_eagle_checkpoint(eagle_module: nn.Module, output_dir: str, label: str = "final"):
     """Saves EAGLE module state dictionary to output directory."""
@@ -109,10 +133,16 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
         tokenizer=tokenizer,
         max_samples=max_samples,
     )
+    train_dataset = splits["train"]
+    eval_dataset = splits["test"] if "test" in splits else splits["train"].select([])
 
-    dataset = splits["train"]
-    if len(dataset) == 0:
-        raise ValueError("The training dataset is empty!")
+    if len(train_dataset) == 0:
+        logger.error("Train dataset is empty.")
+        return
+
+    repo_name = build_repo_name(config)
+    logger.info(f"HF repo: {repo_name}")
+    logger.info(f"Split: {len(train_dataset)} train, {len(eval_dataset)} eval examples")
 
     def collate_fn(batch):
         bs = len(batch)
@@ -165,10 +195,18 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
         }
 
     dataloader = DataLoader(
-        dataset,
+        train_dataset,
         batch_size=getattr(config, "batch_size", 16),
         shuffle=True,
         collate_fn=collate_fn,
+    )
+    eval_dataloader = DataLoader(
+        eval_dataset,  # type: ignore[arg-type]
+        batch_size=getattr(config, "batch_size", 16),
+        shuffle=False,
+        pin_memory=(device.type == "cuda"),
+        collate_fn=collate_fn,
+        num_workers=2,
     )
 
     scaler = GradScaler("cuda", enabled=(device.type == "cuda"))
@@ -179,6 +217,7 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
     global_step = 0
     max_steps = getattr(config, "max_steps", 1000)
     log_every = getattr(config, "log_every", 10)
+    eval_every = getattr(config, "eval_every", 100)
     step = start_step
     target_step = start_step + config.max_steps
     accum_count = 0
@@ -214,7 +253,16 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
             optimizer.zero_grad()
 
             global_step += 1
-
+            if step % eval_every == 0 and len(eval_dataset) > 0:
+                eval_loss = _compute_eval_loss(eagle_module, base_model, eval_dataloader, device)
+                logger.info(f"Step {step} | Eval loss: {eval_loss:.4f}")
+                wandb.log({"eval/loss": eval_loss, "step": step})
+                if eval_loss < best_eval_loss:
+                    best_eval_loss = eval_loss
+                    _save_checkpoint(
+                        eagle_module, tokenizer, optimizer, config.output_dir, "best", repo_name,
+                        push_to_hub=False, scheduler=scheduler,
+                    )
             # Log to Wandb
             if global_step % log_every == 0:
                 avg_loss = log_accum_loss / log_micro_count
@@ -274,3 +322,80 @@ def _build_scheduler(optimizer: optim.Optimizer, config: Any) -> LambdaLR:
         return max(0.2, cosine_decay)
 
     return LambdaLR(optimizer, lr_lambda)
+
+def _save_checkpoint(
+    student,
+    tokenizer,
+    optimizer,
+    output_dir,
+    label,
+    repo_name=None,
+    push_to_hub=False,
+    scheduler=None,
+):
+    run_name = wandb.run.name if wandb.run else "medusa-run"
+    path = os.path.join(output_dir, f"{run_name}-{label}.ckpt")
+    os.makedirs(path, exist_ok=True)
+
+    if hasattr(student, "save_pretrained"):
+        student.save_pretrained(path)
+    else:
+        torch.save(student.state_dict(), os.path.join(path, "pytorch_model.bin"))
+
+    if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
+        tokenizer.save_pretrained(path)
+
+    torch.save(optimizer.state_dict(), os.path.join(path, "optimizer.pt"))
+    if scheduler is not None:
+        torch.save(scheduler.state_dict(), os.path.join(path, "scheduler.pt"))
+    logger.info(f"Saved checkpoint: {path}")
+
+    if push_to_hub and repo_name:
+        hub_repo = f"{repo_name}-{label}" if isinstance(label, int) else repo_name
+        logger.info(f"Pushing to HF Hub: {hub_repo}")
+        if hasattr(student, "push_to_hub"):
+            student.push_to_hub(hub_repo, commit_message=f"Distilled model (step {label})")
+        if tokenizer is not None and hasattr(tokenizer, "push_to_hub"):
+            tokenizer.push_to_hub(hub_repo, commit_message=f"Tokenizer (step {label})")
+        logger.info(f"Pushed: https://huggingface.co/{hub_repo}")
+
+def build_repo_name(cfg: Any) -> str:
+    hf_repo_id = getattr(cfg, "hf_repo_id", None)
+    if hf_repo_id:
+        return hf_repo_id
+    target_model = getattr(cfg, "target_model", None) or getattr(cfg, "draft_model", None)
+    model_short = _model_short_name(target_model)
+    lang = getattr(cfg, "language_code", "en")
+    return f"{model_short}-medusa-{lang}"
+
+def _model_short_name(model_name: str | None) -> str:
+    if not model_name:
+        return "unknown_model"
+    return model_name.strip("/").split("/")[-1]
+
+def setup_wandb(config: Any):
+    model_short = _model_short_name(config.draft_model or config.target_model)
+    group = f"distill_{model_short}__{config.language_code}"
+
+    tags = [
+        "distillation",
+        config.language_code,
+        config.task,
+        model_short,
+        f"lr={config.learning_rate}",
+        f"steps={config.max_steps}",
+        f"ga={config.grad_accum_steps}",
+    ]
+
+    run = wandb.init(
+        project=config.wandb_project,
+        entity=os.getenv("WANDB_ENTITY", None),
+        config=asdict(config),
+        group=group,
+        job_type=f"distill-{config.task}",
+        tags=tags,
+    )
+    wandb.define_metric("step")
+    wandb.define_metric("train/*", step_metric="step")
+    wandb.define_metric("eval/*", step_metric="step")
+    return run

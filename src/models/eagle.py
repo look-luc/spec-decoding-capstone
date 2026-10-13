@@ -17,10 +17,18 @@ class EagleModule(nn.Module):
     def get_embedding(self, token_id: torch.Tensor) -> torch.Tensor:
         return self.embeddings(token_id)
 
-    def forward(self, token_id: torch.Tensor, hidden_state: torch.Tensor):
+    def forward(
+        self,
+        token_id: torch.Tensor,
+        hidden_state: torch.Tensor,
+        **kwargs
+    ):
         token_emb = self.get_embedding(token_id)
         fused = torch.cat([token_emb, hidden_state], dim=-1)
         projected = self.fc_fusion(fused)
         next_hidden = self.decoder_layer(projected, projected)
         logits = self.lm_head(next_hidden)
+        if kwargs.get("use_cache", False) or "past_key_values" in kwargs:
+            return logits, next_hidden, kwargs.get("past_key_values", None)
+
         return next_hidden, logits

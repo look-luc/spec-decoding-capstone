@@ -13,7 +13,6 @@ from typing import Literal, cast
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers.cache_utils import DynamicCache
 
 from src.models import madusa
 
