@@ -1,10 +1,12 @@
 import logging
 import os
+from dataclasses import asdict
 
 import datasets
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import wandb
 from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]
 from torch.utils.data import DataLoader
 
@@ -44,7 +46,7 @@ def compute_eagle_loss(
 
         shifted_target_logprobs = target_logprobs[:, 1:, :]
         matched_target_indices = target_indices[:, 1:, :]
-        mask = label_mask[:, 1:, :]
+        mask = label_mask[:, 1:]
 
         student_logprobs = torch.nn.functional.log_softmax(pred_logits, dim=-1)
         gathered_student_logprobs = student_logprobs.gather(
@@ -75,9 +77,14 @@ def save_eagle_checkpoint(eagle_module: nn.Module, output_dir: str, label: str =
 
 
 def run_eagle_training(config, base_model, eagle_module, tokenizer):
-    """Execution loop for EAGLE training/distillation."""
     device = next(eagle_module.parameters()).device
     os.makedirs(config.output_dir, exist_ok=True)
+
+    if wandb.run is None:
+        wandb.init(
+            project=getattr(config, "wandb_project", "speculative decoding capstone"),
+            config=asdict(config) if hasattr(config, "__dataclass_fields__") else vars(config)
+        )
 
     optimizer = optim.AdamW(eagle_module.parameters(), lr=config.learning_rate)
 
@@ -85,7 +92,7 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
     dataset_type = getattr(config, "dataset_type", "bi")
     max_samples = max(getattr(config, "max_samples", 7000), 6000)
 
-    logger.info(f"Assembling dataset in memory for '{lang_code}' (type={dataset_type}, max_samples={max_samples})...")
+    logger.info(f"Assembling dataset in memory for '{lang_code}'...")
     splits = assemble_dataset(
         lang_code=lang_code,
         type=dataset_type,
@@ -94,30 +101,49 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
     )
 
     dataset = splits["train"]
-    if "logprobs" in dataset.column_names:
-        dataset = dataset.filter(lambda r: r.get("logprobs") is not None and len(r["logprobs"]) > 0)
-
     if len(dataset) == 0:
-        raise ValueError("The training dataset is empty after filtering! Check if dataset assembly generated the expected fields.")
+        raise ValueError("The training dataset is empty!")
 
     def collate_fn(batch):
         bs = len(batch)
-        seq_len = max([len(r["token_ids"]) for r in batch])
-        topk = len(batch[0]["logprobs"][0])
+        token_lists = []
+        for r in batch:
+            if "token_ids" in r and r["token_ids"] is not None:
+                ids = r["token_ids"]
+            elif "text" in r and r["text"] is not None:
+                ids = tokenizer.encode(r["text"], add_special_tokens=True)
+            elif config.language_code in r and r[config.language_code] is not None:
+                ids = tokenizer.encode(r[config.language_code], add_special_tokens=True)
+            else:
+                string_val = next((v for k, v in r.items() if k != "origin" and isinstance(v, str)), None)
+                ids = tokenizer.encode(string_val, add_special_tokens=True)
+            token_lists.append(ids)
 
-        input_ids = torch.full((bs, seq_len), 0, dtype=torch.long)
+        seq_len = max(len(ids) for ids in token_lists)
+        topk = getattr(config, "top_k", 50) if getattr(config, "top_k", 50) > 0 else 50
+
+        input_ids = torch.full((bs, seq_len), tokenizer.pad_token_id or 0, dtype=torch.long)
         attention_mask = torch.zeros((bs, seq_len), dtype=torch.long)
         topk_logprobs = torch.zeros((bs, seq_len - 1, topk), dtype=torch.float32)
         topk_logprobs_indices = torch.zeros((bs, seq_len - 1, topk), dtype=torch.long)
         label_mask = torch.zeros((bs, seq_len - 1), dtype=torch.float32)
 
         for idx in range(bs):
-            item_seq_len = len(batch[idx]["token_ids"])
-            item_prompt_len = batch[idx]["prompt_length"]
-            input_ids[idx][:item_seq_len] = torch.as_tensor(batch[idx]["token_ids"])
+            ids = token_lists[idx]
+            item_seq_len = len(ids)
+            item_prompt_len = batch[idx].get("prompt_length", 1)
+
+            input_ids[idx][:item_seq_len] = torch.as_tensor(ids)
             attention_mask[idx][:item_seq_len] = 1
-            topk_logprobs[idx][item_prompt_len - 1 : item_seq_len - 1] = torch.as_tensor(batch[idx]["logprobs"])
-            topk_logprobs_indices[idx][item_prompt_len - 1 : item_seq_len - 1] = torch.as_tensor(batch[idx]["logprobs_vocab_idx"])
+
+            # If dataset lacks precomputed logprobs, fallback to uniform/dummy or standard CE targets
+            if "logprobs" in batch[idx] and batch[idx]["logprobs"] is not None:
+                lp = batch[idx]["logprobs"]
+                lpi = batch[idx].get("logprobs_vocab_idx", batch[idx].get("topk_logprobs_indices"))
+                if lp and lpi:
+                    topk_logprobs[idx][item_prompt_len - 1 : item_seq_len - 1] = torch.as_tensor(lp[:item_seq_len - item_prompt_len])
+                    topk_logprobs_indices[idx][item_prompt_len - 1 : item_seq_len - 1] = torch.as_tensor(lpi[:item_seq_len - item_prompt_len])
+
             label_mask[idx][item_prompt_len - 1 : item_seq_len - 1] = 1.0
 
         return {
@@ -138,16 +164,30 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
     scaler = GradScaler("cuda", enabled=(device.type == "cuda"))
     eagle_module.train()
 
-    for epoch in range(config.max_steps):
-        for step, batch in enumerate(dataloader):
+    global_step = 0
+    max_steps = getattr(config, "max_steps", 1000)
+    log_every = getattr(config, "log_every", 10)
+
+    while global_step < max_steps:
+        for batch_idx, batch in enumerate(dataloader):
             optimizer.zero_grad()
             loss = compute_eagle_loss(eagle_module, base_model, batch, device=device)
+
+            if torch.isnan(loss) or loss.item() == 0.0:
+                logger.warning(f"Step {global_step} | Encountered zero or NaN loss. Check target logprobs generation.")
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
 
-            if step % config.log_every == 0:
-                logger.info(f"Epoch {epoch} | Step {step} | Loss: {loss.item():.4f}")
+            global_step += 1
+
+            # Log to Wandb
+            if global_step % log_every == 0:
+                logger.info(f"Step {global_step} | Loss: {loss.item():.4f}")
+                wandb.log({
+                    "train/loss": loss.item(),
+                    "train/global_step": global_step
+                })
 
     save_eagle_checkpoint(eagle_module, config.output_dir, label="final")

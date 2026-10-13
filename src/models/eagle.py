@@ -21,6 +21,6 @@ class EagleModule(nn.Module):
         token_emb = self.get_embedding(token_id)
         fused = torch.cat([token_emb, hidden_state], dim=-1)
         projected = self.fc_fusion(fused)
-        next_hidden = self.decoder_layer(projected)
+        next_hidden = self.decoder_layer(projected, projected)
         logits = self.lm_head(next_hidden)
         return next_hidden, logits
