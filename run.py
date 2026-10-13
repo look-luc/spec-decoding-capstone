@@ -114,7 +114,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
                 num_heads=config.num_heads
             ).to(config.device)
 
-            run_eagle_training(config=config, base_model=temp_target, eagle_module=temp_eagle, tokenizer=temp_tokenizer) # <--- Pass tokenizer
+            run_eagle_training(config=config, base_model=temp_target, eagle_module=temp_eagle, tokenizer=temp_tokenizer)
             checkpoint_path = os.path.join(config.output_dir, "eagle_module_final.pt")
             config.draft_model = checkpoint_path
 

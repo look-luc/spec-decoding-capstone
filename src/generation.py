@@ -74,28 +74,33 @@ def generate_output(
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         return cast(str, decoded).strip(), metrics
     if isinstance(draft_model, EagleModule) or config.draft_model_type.lower() == "eagle":
-        eagle_module = EagleModule(
-            vocab_size=model.config.vocab_size,
-            embed_dim=model.config.hidden_size,
-            hidden_dim=model.config.hidden_size,
-            num_heads=config.num_heads,
-        ).to(config.device)
+        if isinstance(draft_model, EagleModule):
+            eagle_module = draft_model
+        else:
+            eagle_module = EagleModule(
+                vocab_size=model.config.vocab_size,
+                embed_dim=model.config.hidden_size,
+                hidden_dim=model.config.hidden_size,
+                num_heads=config.num_heads,
+            ).to(config.device)
 
-        eagle_state_dict = torch.load(os.path.join(config.draft_model_dir, "eagle_module.pt"), map_location=config.device)
-        eagle_module.load_state_dict(eagle_state_dict)
+            checkpoint_path = config.draft_model or os.path.join(getattr(config, "output_dir", "./output"), "eagle_module_final.pt")
+            if os.path.exists(checkpoint_path):
+                eagle_state_dict = torch.load(checkpoint_path, map_location=config.device)
+                eagle_module.load_state_dict(eagle_state_dict)
 
         output_ids, metrics = spec_decode_eagle(
             target_model=model,
             eagle_module=eagle_module,
             tokenizer=tokenizer,
-            input_ids=inputs,
+            input_ids=inputs["input_ids"],
             mode=config.decoding_mode,
             max_new_tokens=config.max_new_tokens,
-            tree_choices=config.tree_choices,
+            tree_choices=getattr(config, "tree_choices", "custom"),
             top_k=config.top_k,
             top_p=config.top_p,
             repetition_penalty=config.repetition_penalty,
-            device=config.device
+            device=inputs["input_ids"].device
         )
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         return cast(str, decoded).strip(), metrics

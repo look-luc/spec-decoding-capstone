@@ -253,10 +253,10 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
             optimizer.zero_grad()
 
             global_step += 1
-            if step % eval_every == 0 and len(eval_dataset) > 0:
+            if global_step % eval_every == 0 and len(eval_dataset) > 0:
                 eval_loss = _compute_eval_loss(eagle_module, base_model, eval_dataloader, device)
-                logger.info(f"Step {step} | Eval loss: {eval_loss:.4f}")
-                wandb.log({"eval/loss": eval_loss, "step": step})
+                logger.info(f"Step {global_step} | Eval loss: {eval_loss:.4f}")
+                wandb.log({"eval/loss": eval_loss, "step": global_step})
                 if eval_loss < best_eval_loss:
                     best_eval_loss = eval_loss
                     _save_checkpoint(
@@ -269,7 +269,7 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
                 current_lr = scheduler.get_last_lr()[0]
                 elapsed = time.time() - start_time
                 logger.info(
-                    f"Step {step} | Loss: {avg_loss:.4f} | "
+                    f"Step {global_step} | Loss: {avg_loss:.4f} | "
                     f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s"
                 )
                 wandb.log({
