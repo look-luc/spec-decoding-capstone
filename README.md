@@ -11,7 +11,7 @@
 - [x] Add a way to save weights for individual additions to the base model
 
 #### Train linear addition of base model
-- [ ] Run the training for medusa and eagle
+- [x] Run the training for medusa and eagle
 
 ### Running experiments
 ##### For `train_heads`
