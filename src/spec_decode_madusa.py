@@ -480,10 +480,7 @@ def speculative_decode(
 
             target_kv_cache = crop_kv_cache(
                 past_key_values=target_out.past_key_values,
-                prefix_len=past_kv_len,
-                best_path=best_path,
-                max_accept_len=max_accept_len,
-                tree_node_dict=tree_node_dict,
+                new_length=cur_gen_idx
             )
 
             if max_accept_len > 0 and best_path is not None:

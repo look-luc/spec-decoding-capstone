@@ -37,8 +37,6 @@ if torch.cuda.is_available():
     print("GPU 0:", torch.cuda.get_device_name(0))
 PY
 
-cd ..
-
 uv run python run.py "$1" "${@:2}"
 
 PROJECT_DIR="/projects/$USER/spec-decoding-capstone"
