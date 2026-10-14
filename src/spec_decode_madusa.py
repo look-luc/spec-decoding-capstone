@@ -70,73 +70,31 @@ def get_stop_token_ids(tokenizer, eos_token_id=None):
     return stop_ids
 
 
-def crop_kv_cache(
-    past_key_values,
-    prefix_len: int,
-    best_path: list | None = None,
-    max_accept_len: int = 0,
-    tree_node_dict: dict | None = None,
-):
+def crop_kv_cache(past_key_values, new_length):
     """
-    Crop and gather KV cache entries for Medusa tree speculative decoding.
-
-    Avoids direct iteration over past_key_values to prevent Cache.__iter__
-    failures on LinearAttentionLayer objects.
+    Crop KV cache to a specific sequence length.
+    Handles both DynamicCache objects and tuple format.
     """
     if past_key_values is None:
         return None
 
-    # Construct sequence indices to keep
-    keep_indices = list(range(prefix_len))
-    if max_accept_len > 0 and best_path is not None and tree_node_dict is not None:
-        for depth in range(max_accept_len):
-            path_prefix = tuple(best_path[: depth + 1])
-            node_idx = tree_node_dict[path_prefix]
-            keep_indices.append(prefix_len + node_idx)
-
-    # Standard Hugging Face DynamicCache (key_cache and value_cache attributes)
-    if hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"):
-        if len(past_key_values.key_cache) > 0:
-            device = past_key_values.key_cache[0].device
-            idx = torch.tensor(keep_indices, dtype=torch.long, device=device)
-            for i in range(len(past_key_values.key_cache)):
-                past_key_values.key_cache[i] = torch.index_select(
-                    past_key_values.key_cache[i], dim=2, index=idx
-                )
-                past_key_values.value_cache[i] = torch.index_select(
-                    past_key_values.value_cache[i], dim=2, index=idx
-                )
+    if hasattr(past_key_values, "crop"):
+        past_key_values.crop(new_length)
         return past_key_values
-
-    # Newer Hugging Face Cache implementations using .layers
-    if hasattr(past_key_values, "layers"):
-        for layer in past_key_values.layers:
-            if hasattr(layer, "keys") and getattr(layer, "keys", None) is not None:
-                idx = torch.tensor(keep_indices, dtype=torch.long, device=layer.keys.device)
-                layer.keys = torch.index_select(layer.keys, dim=2, index=idx)
-                layer.values = torch.index_select(layer.values, dim=2, index=idx)
-            elif hasattr(layer, "key_states") and getattr(layer, "key_states", None) is not None:
-                idx = torch.tensor(keep_indices, dtype=torch.long, device=layer.key_states.device)
-                layer.key_states = torch.index_select(layer.key_states, dim=2, index=idx)
-                layer.value_states = torch.index_select(layer.value_states, dim=2, index=idx)
-        return past_key_values
-
-    # Legacy tuple/list cache format ((key_state, value_state), ...)
-    if isinstance(past_key_values, (tuple, list)):
+    else:
         new_past = []
         for layer_past in past_key_values:
+            # NGramModel-style cache: a single tensor per layer
             if isinstance(layer_past, torch.Tensor):
-                idx = torch.tensor(keep_indices, dtype=torch.long, device=layer_past.device)
-                new_past.append(torch.index_select(layer_past, dim=-1, index=idx))
-            elif isinstance(layer_past, (tuple, list)) and len(layer_past) == 2:
-                k_state, v_state = layer_past
-                idx = torch.tensor(keep_indices, dtype=torch.long, device=k_state.device)
-                k_cropped = torch.index_select(k_state, dim=2, index=idx)
-                v_cropped = torch.index_select(v_state, dim=2, index=idx)
+                # Crop along the sequence-length dimension (assumed last)
+                new_past.append(layer_past[..., :new_length])
+            # Standard (key, value) pair cache from HF
+            elif len(layer_past) == 2:
+                key_state, value_state = layer_past
+                k_cropped = key_state[..., :new_length, :]
+                v_cropped = value_state[..., :new_length, :]
                 new_past.append((k_cropped, v_cropped))
         return tuple(new_past)
-
-    return past_key_values
 
 def get_kv_cache_length(past_key_values) -> int:
     """Helper to get the current sequence length of a KV cache."""

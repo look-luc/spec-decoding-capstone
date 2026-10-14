@@ -20,19 +20,20 @@
   - [x] Run sample with these values
 
 ##### For `train_eagle`
-- [ ] Configure the tree draft head parameters, sequence truncation length, and hidden state feature extraction setup
-  - [ ] Run greedy with these values
-  - [ ] Run sample with these values
+- [x] Configure the tree draft head parameters, sequence truncation length, and hidden state feature extraction setup
+  - [x] Run greedy with these values
+  - [x] Run sample with these values
 
 ### Running Experimental Benchmarks & Evaluation
 - [x] Medusa Spec Decoding
   - [x] Adjust candidate tree tree-structure choices to `num_heads`
-- [ ] EAGLE Spec Decoding
-  - [ ] Set `--max_new_tokens` and update `TREE_CHOICES`
+- [x] EAGLE Spec Decoding
+  - [x] Set `--max_new_tokens` and update `TREE_CHOICES`
     - ties to the eagle-1 and eagle-2 above
 ## See if there's a way to get better results
 - [ ] test the increase of steps for medusa heads
 - [ ] other areas for medusa
+- [ ] Trying to get results for eagle better
 ## Setup
 Clone with submodules:
 ```bash

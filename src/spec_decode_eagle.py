@@ -582,13 +582,13 @@ def spec_decode_eagle(
             accepted_tokens = [
                 node.token_id for node in best_path
             ]
-            accepted_tensor = torch.tensor(accepted_tokens, dtype=torch.int64, device=device)
-            tokens_to_add = torch.cat(
-                [accepted_tensor, bonus_token.view(-1)],
-                dim=-1
-            ).unsqueeze(0)
+            accepted_tensor = torch.tensor(accepted_tokens, dtype=torch.int64, device=device).view(-1)
+            bonus_tensor = bonus_token.view(-1)
 
-            new_gen_idx = cur_gen_idx + len(tokens_to_add[0])
+            tokens_to_add = torch.cat([accepted_tensor, bonus_tensor], dim=0).unsqueeze(0)
+            num_added = tokens_to_add.size(-1)
+
+            new_gen_idx = cur_gen_idx + num_added
             generated_tokens[:, cur_gen_idx:new_gen_idx] = tokens_to_add
             cur_gen_idx = new_gen_idx
 
@@ -607,7 +607,7 @@ def spec_decode_eagle(
             target_kv_cache = final_target_out.past_key_values
             last_hidden = final_target_out.hidden_states[-1][:, -1, :]
 
-            if tokens_to_add in stop_token_ids:
+            if torch.isin(tokens_to_add, stop_token_ids).any():
                 generated_tokens = generated_tokens[:, :cur_gen_idx]
                 break
 

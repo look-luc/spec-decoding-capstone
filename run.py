@@ -186,13 +186,10 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
         draft_model.train(assemble_dataset(config.language_code, 'mono', target_tokenizer, config.max_samples_mono)['train'])
         logger.info(f"N-gram model vocabulary size: {draft_model.vocab_size}")
 
-<<<<<<< HEAD
     else:
         raise ValueError(f"Unsupported draft_model_type: {config.draft_model_type}")
 
     # 5. Decoding loop
-=======
-    # 4. Decoding loop
     # Warm up on the first couple of prompts (outputs discarded) so one-off CUDA
     # initialisation doesn't inflate the timings of the first logged sentences.
     if device.type == "cuda":
@@ -208,7 +205,6 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
                 config,
             )
 
->>>>>>> upstream/main
     predictions = []
     all_metrics: list[dict] = []
     for row_idx, row in enumerate(tqdm(dataset, desc="Decoding")):
