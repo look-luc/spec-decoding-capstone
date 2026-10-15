@@ -16,6 +16,7 @@ class MedusaConfig:
     draft_model: str | None
     draft_model_type: Literal["medusa", "madusa"]
     decoding_mode: Literal["greedy", "sample"]
+    tree_choices:str|list[int] = "standard"
     num_heads:int = 3
     top_k: int = 0
     top_p: float = 0.0

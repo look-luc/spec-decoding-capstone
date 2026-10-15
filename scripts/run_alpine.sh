@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --partition=aa100
+#SBATCH --partition=artxpro6000
 #SBATCH --qos=gpu-normal
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
@@ -37,8 +37,6 @@ if torch.cuda.is_available():
     print("Detected GPUs:", torch.cuda.device_count())
     print("GPU 0:", torch.cuda.get_device_name(0))
 PY
-
-cd ..
 
 uv run python run.py "$1" "${@:2}"
 

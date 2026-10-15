@@ -146,7 +146,9 @@ def build_tree(
     top_p,
     mode
 ):
-    if logits.ndim == 3:
+    if logits.ndim == 4:
+        logits = logits[:, 0, 0, :]
+    elif logits.ndim == 3:
         logits = logits.squeeze(1)
 
     num_heads = logits.size(0)
@@ -181,7 +183,7 @@ def build_tree(
     for path in valid_tree_choice:
         for depth in range(len(path)):
             rank = path[depth]
-            token_id = top_token_per_head[depth][rank]
+            token_id = top_token_per_head[depth][rank].item()
 
             path_prefix = tuple(path[: depth + 1])
             parent_prefix = tuple(path[: depth])
@@ -430,7 +432,7 @@ def speculative_decode(
                     target_dist = apply_filters(F.log_softmax(node_raw_logits, dim=-1))
                     verified_token = select_index(target_dist)
 
-                    if draft_token == verified_token:
+                    if draft_token.item() == verified_token.item():
                         accepted_in_path.append(draft_token)
                     else:
                         bonus_token = verified_token
@@ -464,11 +466,11 @@ def speculative_decode(
 
             for i in range(len(octile_offsets)):
                 checkpoint = octile_offsets[i]
-                if gen_offset <= checkpoint and checkpoint < (gen_offset + draft_depth):
-                    per_position_draft_count[i] = per_position_draft_count[i] + 1
+                if gen_offset <= checkpoint < (gen_offset + draft_depth):
+                    per_position_draft_count[i] += 1
                     rel_depth = checkpoint - gen_offset
-                    if rel_depth == checkpoint - gen_offset:
-                        per_position_accept_count[i] = per_position_accept_count[i] + 1
+                    if rel_depth < len(best_accepted_token):
+                        per_position_accept_count[i] += 1
 
             bonus_tok = best_bonus_token.view(-1) if best_bonus_token.ndim > 0 else best_bonus_token.unsqueeze(0)
             accepted_toks = [t.view(-1) for t in best_accepted_token]
