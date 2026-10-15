@@ -589,6 +589,15 @@ def spec_decode_eagle(
             num_added = tokens_to_add.size(-1)
 
             new_gen_idx = cur_gen_idx + num_added
+
+            # Dynamically expand generated_tokens if capacity is exceeded
+            if new_gen_idx > generated_tokens.size(-1):
+                padding = torch.zeros(
+                    (generated_tokens.size(0), new_gen_idx - generated_tokens.size(-1)),
+                    dtype=generated_tokens.dtype,
+                    device=device
+                )
+                generated_tokens = torch.cat([generated_tokens, padding], dim=-1)
             generated_tokens[:, cur_gen_idx:new_gen_idx] = tokens_to_add
             cur_gen_idx = new_gen_idx
 

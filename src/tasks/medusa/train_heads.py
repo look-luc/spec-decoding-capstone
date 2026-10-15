@@ -103,6 +103,7 @@ def setup_wandb(config: Any):
         group=group,
         job_type=f"distill-{cfg.task}",
         tags=tags,
+        name=f"{config.draft_model_type} {config.max_steps} {config.tree_choices} {config.num_heads} {config.decoding_mode}"
     )
     wandb.define_metric("step")
     wandb.define_metric("train/*", step_metric="step")

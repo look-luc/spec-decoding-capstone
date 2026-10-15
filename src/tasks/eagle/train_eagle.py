@@ -24,14 +24,13 @@ def compute_eagle_loss(
     base_model: nn.Module,
     batch: dict,
     device: torch.device = None,
+    top_k: int = 50,
 ) -> torch.Tensor:
     if device is None:
         device = next(base_model.parameters()).device
 
     input_ids = batch["input_ids"].to(device)
     attention_mask = batch["attention_mask"].to(device, non_blocking=True)
-    target_logprobs = batch["topk_logprobs"].to(device)
-    target_indices = batch["topk_logprobs_indices"].to(device)
     label_mask = batch["label_mask"].to(device)
 
     with autocast(device_type=device.type, enabled=(device.type == "cuda")):
@@ -42,6 +41,9 @@ def compute_eagle_loss(
                 output_hidden_states=True,
             )
             base_hidden_states = base_outputs.hidden_states[-1]
+            base_logits = base_outputs.logits
+            target_log_softmax = torch.nn.functional.log_softmax(base_logits, dim=-1)
+            target_logprobs, target_indices = torch.topk(target_log_softmax, k=top_k, dim=-1)
 
         pred_hidden, pred_logits = eagle_module(
             token_id=input_ids[:, :-1],
@@ -50,7 +52,7 @@ def compute_eagle_loss(
 
         shifted_target_logprobs = target_logprobs[:, 1:, :]
         matched_target_indices = target_indices[:, 1:, :]
-        mask = label_mask[:, 1:]
+        mask = label_mask
 
         student_logprobs = torch.nn.functional.log_softmax(pred_logits, dim=-1)
         gathered_student_logprobs = student_logprobs.gather(
@@ -393,6 +395,7 @@ def setup_wandb(config: Any):
         config=asdict(config),
         group=group,
         job_type=f"distill-{config.task}",
+        name=f"{config.draft_model_type} {config.max_steps} {config.tree_choices} {config.decoding_mode}",
         tags=tags,
     )
     wandb.define_metric("step")

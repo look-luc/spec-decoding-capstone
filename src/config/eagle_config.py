@@ -45,6 +45,7 @@ class EagleConfig:
     grad_accum_steps:int = 2
     eval_every:int = 50
     max_steps: int = 500
+    warmup_steps:int = 20
     log_every:int = 10
     wandb_tag: str | None = "Eagle 1 225 steps"
     output_dir: str = "checkpoints"
