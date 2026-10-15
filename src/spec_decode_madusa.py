@@ -7,6 +7,7 @@ Contains:
 - crop_kv_cache: KV cache management utility
 """
 
+import ast
 import time
 from typing import Literal, cast
 
@@ -265,7 +266,13 @@ def speculative_decode(
     medusa = medusa.to(device=device, dtype=target_model.dtype)
 
     if isinstance(tree_choices, str):
-        tree_choices = default_tree(tree_choices, num_heads=num_heads)
+        if tree_choices.strip().startswith("["):
+            try:
+                tree_choices = ast.literal_eval(tree_choices)
+            except Exception:
+                tree_choices = default_tree(tree_choices, num_heads=num_heads)
+        else:
+            tree_choices = default_tree(tree_choices, num_heads=num_heads)
 
     def apply_filters(logprobs: torch.Tensor) -> torch.Tensor:
         return filter_logprobs(logprobs, top_k=top_k, top_p=top_p)
@@ -479,18 +486,19 @@ def speculative_decode(
             generated_tokens[:, cur_gen_idx:new_gen_idx] = tokens_to_add
 
             total_matched_tokens += len(best_accepted_token)
+            accepted_len = len(best_accepted_token)
 
             target_kv_cache = crop_kv_cache(
                 past_key_values=target_out.past_key_values,
                 new_length=cur_gen_idx
             )
 
-            if max_accept_len > 0 and best_path is not None:
-                last_accepted_prefix = tuple(best_path[:max_accept_len])
+            if accepted_len > 0 and best_path is not None:
+                last_accepted_prefix = tuple(best_path[:accepted_len])
                 last_node_idx = tree_node_dict[last_accepted_prefix]
                 last_hidden = target_out.hidden_states[-1][:, last_node_idx:last_node_idx + 1, :].detach().clone()
             else:
-                last_hidden = last_hidden.detach().clone()
+                last_hidden = target_out.hidden_states[-1][:, 0:1, :].detach().clone()
 
             prev_target_logits = best_bonus_logits
             cur_gen_idx = new_gen_idx
