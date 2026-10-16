@@ -395,8 +395,8 @@ def setup_wandb(config: Any):
         config=asdict(config),
         group=group,
         job_type=f"distill-{config.task}",
-        name=f"{config.draft_model_type} {config.max_steps} {config.tree_choices} {config.decoding_mode}",
         tags=tags,
+        name=f"{config.draft_model_type} {config.max_steps} {config.tree_choices} {config.decoding_mode}",
     )
     wandb.define_metric("step")
     wandb.define_metric("train/*", step_metric="step")

@@ -376,6 +376,8 @@ def spec_decode_eagle(
         tree_choices_arr = [1, 8, 4, 2]
     elif tree_choices.lower() == "custom":
         tree_choices_arr = [1, 4, 2, 3]
+    elif tree_choices.lower() == "conservative":
+        tree_choices_arr = [1, 3, 2, 1]
 
     def apply_filters(logprobs: torch.Tensor) -> torch.Tensor:
         return filter_logprobs(logprobs, top_k=top_k, top_p=top_p)

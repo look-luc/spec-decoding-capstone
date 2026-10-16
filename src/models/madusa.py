@@ -17,11 +17,11 @@ class MedusaHead(nn.Module):
         super().__init__()
         # Intermediate projection layer keeping hidden_size dimension
         self.mlp = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size, bias=False, dtype=dtype),
+            nn.Linear(hidden_size, hidden_size, bias=True, dtype=dtype),
             nn.SiLU(),
         )
         # Final projection to vocabulary size
-        self.proj = nn.Linear(hidden_size, vocab_size, bias=False, dtype=dtype)
+        self.proj = nn.Linear(hidden_size, vocab_size, bias=True, dtype=dtype)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # Residual connection over the intermediate hidden projection
