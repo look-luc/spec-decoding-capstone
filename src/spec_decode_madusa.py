@@ -113,7 +113,7 @@ def get_kv_cache_length(past_key_values) -> int:
 
 def default_tree(preset_type: str, num_heads: int = 4):
     preset_type = preset_type.lower()
-    if preset_type not in ["lightweight_low_resource", "greedy_linear", "standard_low_resource", "deep_linear"]:
+    if preset_type not in ["lightweight_low_resource", "greedy_linear", "standard_low_resource", "deep_linear", "custom"]:
         raise ValueError(f"Unknown preset: {preset_type}")
 
     if preset_type == "greedy_linear" or preset_type == "deep_linear":
@@ -135,6 +135,17 @@ def default_tree(preset_type: str, num_heads: int = 4):
             [0, 0, 0], [1, 0], [0, 2], [3], [0, 3],
             [2, 0], [0, 0, 1], [1, 1], [3, 0], [1, 0, 0],
             [0, 2, 0], [2, 1], [0, 0, 2]
+        ]
+    elif "custom" == preset_type:
+        return [
+            [0],
+            [0, 0],
+            [1],
+            [0, 1],
+            [2],
+            [0, 0, 0],
+            [1, 0],
+            [0, 2]
         ]
 
 def build_tree(
