@@ -26,7 +26,18 @@ class EagleModule(nn.Module):
         token_emb = self.get_embedding(token_id)
         fused = torch.cat([token_emb, hidden_state], dim=-1)
         projected = self.fc_fusion(fused)
-        next_hidden = self.decoder_layer(projected, projected)
+
+        seq_len = projected.size(1)
+        tgt_mask = None
+        if seq_len > 1:
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=projected.device)
+
+        next_hidden = self.decoder_layer(
+            projected,
+            projected,
+            tgt_mask=tgt_mask,
+            is_causal=(seq_len > 1)
+        )
         logits = self.lm_head(next_hidden)
         if kwargs.get("use_cache", False) or "past_key_values" in kwargs:
             return logits, next_hidden, kwargs.get("past_key_values", None)
