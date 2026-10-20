@@ -167,11 +167,13 @@ def get_ancestor_tokens(node):
         curr_node = curr_node.parent
     return tokens
 
-def build_eagle_tree_attn(tree_nodes, base_seq_len,device):
+def build_eagle_tree_attn(tree_nodes, base_seq_len, device):
     num_nodes = len(tree_nodes)
     total_len = base_seq_len + num_nodes
-    attn_mask = torch.full((num_nodes, total_len), torch.finfo(torch.float32).min).to(device)
-    pos_ids = torch.tensor([base_seq_len-1+node.depth for node in tree_nodes]).to(device)
+
+    model_dtype = torch.float32  # Will be cast externally if needed
+    attn_mask = torch.full((num_nodes, total_len), -10000.0, dtype=torch.float32, device=device)
+    pos_ids = torch.zeros(num_nodes, dtype=torch.long, device=device)
 
     for i in range(num_nodes):
         node_i = tree_nodes[i]
@@ -182,12 +184,11 @@ def build_eagle_tree_attn(tree_nodes, base_seq_len,device):
 
         pos_ids[i] = base_seq_len + depth
 
-        for col in range(base_seq_len):
-            attn_mask[i][col] = 0.0
+        attn_mask[i, :base_seq_len] = 0.0
 
         cur_ancestor = node_i
         while cur_ancestor is not None:
-            attn_mask[i][base_seq_len + cur_ancestor.index] = 0.0
+            attn_mask[i, base_seq_len + cur_ancestor.index] = 0.0
             cur_ancestor = cur_ancestor.parent
 
     return attn_mask.unsqueeze(0).unsqueeze(0), pos_ids.unsqueeze(0)
@@ -508,16 +509,11 @@ def spec_decode_eagle(
                 base_seq_len=base_seq_len,
                 device=device
             )
+            model_dtype = next(target_model.parameters()).dtype
 
-            tree_pos_ids = torch.tensor(
-                tree_pos_ids_list,
-                dtype=next(target_model.parameters()).dtype,
-                device=device
-            ).unsqueeze(0)
-            tree_attn_mask = torch.tensor(
-                tree_attn_mask_list,
-                dtype=next(target_model.parameters()).dtype, device=device
-            ).unsqueeze(0).unsqueeze(0)
+            tree_pos_ids = tree_pos_ids_list.detach().clone().to(dtype=torch.long, device=device)
+            tree_attn_mask = tree_attn_mask_list.detach().clone().to(dtype=model_dtype, device=device)
+
             target_out = target_model(
                 input_ids=flattened_tokens,
                 attention_mask=tree_attn_mask,
