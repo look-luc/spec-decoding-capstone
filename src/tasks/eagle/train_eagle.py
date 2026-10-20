@@ -45,9 +45,12 @@ def compute_eagle_loss(
             target_log_softmax = torch.nn.functional.log_softmax(base_logits, dim=-1)
             target_logprobs, target_indices = torch.topk(target_log_softmax, k=top_k, dim=-1)
 
+        draft_tokens = input_ids[:,:-1]
+        draft_logits = base_hidden_states[:, :-1, :]
+        targ_logits = base_logits[:, :-1, :]
         pred_hidden, pred_logits = eagle_module(
-            token_id=input_ids[:, :-1],
-            hidden_state=base_hidden_states[:, :-1, :],
+            token_id=draft_tokens,
+            hidden_state=draft_logits,
         )
 
         shifted_target_logprobs = target_logprobs[:, 1:, :]
