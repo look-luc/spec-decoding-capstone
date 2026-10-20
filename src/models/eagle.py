@@ -36,7 +36,7 @@ class EagleModule(nn.Module):
             projected,
             projected,
             tgt_mask=tgt_mask,
-            is_causal=(seq_len > 1)
+            tgt_is_causal=(seq_len > 1)
         )
         logits = self.lm_head(next_hidden)
         if kwargs.get("use_cache", False) or "past_key_values" in kwargs:
