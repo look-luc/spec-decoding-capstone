@@ -220,7 +220,8 @@ def eagle_draft_tree_expansion(
     repetition_penalty_window,
     generated_tokens,
     cur_gen_idx,
-    mode
+    mode,
+    score_threshold: float = 0.01  # Minimum cumulative score to keep a branch
 ):
     tree_nodes = []
 
@@ -259,7 +260,15 @@ def eagle_draft_tree_expansion(
             projected = eagle_module.fc_fusion(fused_feat)
 
             proj_batched = projected.unsqueeze(0).unsqueeze(0)
-            next_hidden_batched = eagle_module.decoder_layer(proj_batched, proj_batched)
+            seq_len = proj_batched.size(1)
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=proj_batched.device) if seq_len > 1 else None
+
+            next_hidden_batched = eagle_module.decoder_layer(
+                proj_batched,
+                proj_batched,
+                tgt_mask=tgt_mask,
+                tgt_is_causal=(seq_len > 1)
+            )
             next_hidden = next_hidden_batched.squeeze(0).squeeze(0)
 
             draft_raw_logits = eagle_module.lm_head(next_hidden)
@@ -293,17 +302,25 @@ def eagle_draft_tree_expansion(
             )
 
             for k_idx in range(branch_factor):
-                child_node = create_node(
-                    index=len(tree_nodes),
-                    parent=parent,
-                    token_id=top_token_ids[k_idx],
-                    hidden_state=next_hidden,
-                    depth=depth,
-                    score=parent.score * torch.exp(top_scores[k_idx])
-                )
-                tree_nodes.append(child_node)
-                next_parents.append(child_node)
+                child_score = parent.score * torch.exp(top_scores[k_idx])
+
+                # Prune branches that fall below our confidence threshold
+                if child_score >= score_threshold:
+                    child_node = create_node(
+                        index=len(tree_nodes),
+                        parent=parent,
+                        token_id=top_token_ids[k_idx],
+                        hidden_state=next_hidden,
+                        depth=depth + 1,
+                        score=child_score
+                    )
+                    tree_nodes.append(child_node)
+                    next_parents.append(child_node)
+
         active_parents = next_parents
+        if len(active_parents) == 0:
+            break
+
     return tree_nodes
 
 def spec_decode_eagle(
@@ -379,6 +396,12 @@ def spec_decode_eagle(
         tree_choices_arr = [1, 4, 2, 3]
     elif tree_choices.lower() == "conservative":
         tree_choices_arr = [1, 3, 2, 1]
+    elif tree_choices.lower() == "balance_2" or tree_choices.lower() == "balance-2" or tree_choices.lower() == "balance 2":
+        tree_choices_arr = [1, 5, 2, 1]
+    elif tree_choices.lower() == "balance_1" or tree_choices.lower() == "balance-1" or tree_choices.lower() == "balance 1":
+        tree_choices_arr = [1, 4, 2, 1]
+    else:
+        raise Exception(f"{tree_choices} is not one of the options")
 
     def apply_filters(logprobs: torch.Tensor) -> torch.Tensor:
         return filter_logprobs(logprobs, top_k=top_k, top_p=top_p)
@@ -643,18 +666,14 @@ def spec_decode_eagle(
     if draft_times_acc[2] > 0 and verifier_times_acc[2] > 0:
         d_sum, d_sum_sq, d_n = draft_times_acc
         v_sum, v_sum_sq, v_n = verifier_times_acc
-
-        avg_draft = d_sum / d_n
-        avg_verifier = v_sum / v_n
-
-        metrics["average_draft_time"] = avg_draft / 1000.0
-        metrics["average_verifier_time"] = avg_verifier / 1000.0
-
-        raw_draft_var = (d_sum_sq / d_n) - (avg_draft ** 2)
-        raw_verifier_var = (v_sum_sq / v_n) - (avg_verifier ** 2)
-
-        metrics["draft_time_variance"] = max(raw_draft_var, 0.0) / 1e6
-        metrics["verifier_time_variance"] = max(raw_verifier_var, 0.0) / 1e6
+        average_draft_time = d_sum / d_n          # ms
+        average_verifier_time = v_sum / v_n        # ms
+        metrics["average_draft_time"] = average_draft_time / 1000  # seconds
+        metrics["average_verifier_time"] = average_verifier_time / 1000
+        raw_draft_variance = d_sum_sq / d_n - average_draft_time**2
+        raw_verifier_variance = v_sum_sq / v_n - average_verifier_time**2
+        metrics["draft_time_variance"] = max(raw_draft_variance, 0.0) / 1e6  # s^2
+        metrics["verifier_time_variance"] = max(raw_verifier_variance, 0.0) / 1e6  # s^2
         metrics["draft_time_count"] = d_n
         metrics["verifier_time_count"] = v_n
 
