@@ -114,25 +114,8 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
                 num_heads=config.num_heads
             ).to(config.device)
 
-            tree_choices_arr = []
-            if config.tree_choices.lower() == "eagle_1" or config.tree_choices.lower() == "eagle-1" or config.tree_choices.lower() == "eagle 1":
-                tree_choices_arr = [1,4,2,2]
-            elif config.tree_choices.lower() == "eagle_2" or config.tree_choices.lower() == "eagle-2" or config.tree_choices.lower() == "eagle 2":
-                tree_choices_arr = [1, 8, 4, 2]
-            elif config.tree_choices.lower() == "custom":
-                tree_choices_arr = [1, 4, 2, 3]
-            elif config.tree_choices.lower() == "conservative":
-                tree_choices_arr = [1, 3, 2, 1]
-            elif config.tree_choices.lower() == "balance_2" or config.tree_choices.lower() == "balance-2" or config.tree_choices.lower() == "balance 2":
-                tree_choices_arr = [1, 5, 2, 1]
-            elif config.tree_choices.lower() == "balance_1" or config.tree_choices.lower() == "balance-1" or config.tree_choices.lower() == "balance 1":
-                tree_choices_arr = [1, 4, 2, 1]
-            else:
-                raise Exception(f"{config.tree_choices} is not one of the options")
-
             run_eagle_training(
                 config=config,
-                tree_choice=tree_choices_arr,
                 base_model=temp_target,
                 eagle_module=temp_eagle,
                 tokenizer=temp_tokenizer
