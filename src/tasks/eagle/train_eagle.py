@@ -23,9 +23,12 @@ def compute_eagle_loss(
     eagle_module: nn.Module,
     base_model: nn.Module,
     batch: dict,
+    config,
+    tree_choice:list[int],
     device: torch.device = None,
-    top_k: int = 50,
 ) -> torch.Tensor:
+    top_k: int = config.top_k
+    max_lookahead: int = tree_choice[-1]
     if device is None:
         device = next(base_model.parameters()).device
 
@@ -45,9 +48,13 @@ def compute_eagle_loss(
             target_log_softmax = torch.nn.functional.log_softmax(base_logits, dim=-1)
             target_logprobs, target_indices = torch.topk(target_log_softmax, k=top_k, dim=-1)
 
-        draft_tokens = input_ids[:,:-1]
+        bs, seq_len = input_ids.shape
+        total_loss = 0.0
+        valid_steps = 0
+
+        # Step 1: Standard causal forward pass over base hidden states
+        draft_tokens = input_ids[:, :-1]
         draft_logits = base_hidden_states[:, :-1, :]
-        targ_logits = base_logits[:, :-1, :]
         pred_hidden, pred_logits = eagle_module(
             token_id=draft_tokens,
             hidden_state=draft_logits,
@@ -62,16 +69,60 @@ def compute_eagle_loss(
             dim=-1, index=matched_target_indices
         )
 
-        cross_entropy_loss = -(
+        ce_loss_step1 = -(
             torch.exp(shifted_target_logprobs) * gathered_student_logprobs
         ).sum(-1)
 
-        final_loss = (cross_entropy_loss * mask).sum() / mask.sum().clamp(min=1)
+        total_loss = total_loss + (ce_loss_step1 * mask).sum() / mask.sum().clamp(min=1)
+        valid_steps += 1
+
+        # Multi-step lookahead rollout supervision for deeper tree accuracy
+        curr_hidden = pred_hidden
+        for step in range(2, max_lookahead + 1):
+            if seq_len <= step:
+                break
+
+            step_tokens = input_ids[:, step - 1 : -1]
+            step_hidden = curr_hidden[:, :-1, :]
+
+            if step_tokens.size(1) == 0:
+                break
+
+            step_pred_hidden, step_pred_logits = eagle_module(
+                token_id=step_tokens,
+                hidden_state=step_hidden,
+            )
+
+            step_target_logprobs = target_logprobs[:, step:, :]
+            step_target_indices = target_indices[:, step:, :]
+            step_mask = label_mask[:, step - 1 :]
+
+            min_len = min(step_pred_logits.size(1), step_target_logprobs.size(1), step_mask.size(1))
+            if min_len <= 0:
+                continue
+
+            step_student_logprobs = torch.nn.functional.log_softmax(step_pred_logits[:, :min_len, :], dim=-1)
+            step_gathered = step_student_logprobs.gather(
+                dim=-1, index=step_target_indices[:, :min_len, :]
+            )
+
+            ce_loss_step = -(
+                torch.exp(step_target_logprobs[:, :min_len, :]) * step_gathered
+            ).sum(-1)
+
+            step_loss_val = (ce_loss_step * step_mask[:, :min_len]).sum() / step_mask[:, :min_len].sum().clamp(min=1)
+
+            # Apply exponential decay weight for deeper lookahead steps
+            total_loss = total_loss + (0.5 ** (step - 1)) * step_loss_val
+            valid_steps += 1
+            curr_hidden = step_pred_hidden
+
+        final_loss = total_loss / valid_steps
 
     return final_loss
 
 @torch.no_grad()
-def _compute_eval_loss(student: torch.nn.Module, base_model: torch.nn.Module, eval_dataloader: DataLoader, device: torch.device) -> float:
+def _compute_eval_loss(student: torch.nn.Module, base_model: torch.nn.Module, eval_dataloader: DataLoader, device: torch.device, config) -> float:
     student.eval()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -79,11 +130,27 @@ def _compute_eval_loss(student: torch.nn.Module, base_model: torch.nn.Module, ev
     total_loss = 0.0
     count = 0
 
+    tree_choices_arr = []
+    if config.tree_choices.lower() == "eagle_1" or config.tree_choices.lower() == "eagle-1" or config.tree_choices.lower() == "eagle 1":
+        tree_choices_arr = [1,4,2,2]
+    elif config.tree_choices.lower() == "eagle_2" or config.tree_choices.lower() == "eagle-2" or config.tree_choices.lower() == "eagle 2":
+        tree_choices_arr = [1, 8, 4, 2]
+    elif config.tree_choices.lower() == "custom":
+        tree_choices_arr = [1, 4, 2, 3]
+    elif config.tree_choices.lower() == "conservative":
+        tree_choices_arr = [1, 3, 2, 1]
+    elif config.tree_choices.lower() == "balance_2" or config.tree_choices.lower() == "balance-2" or config.tree_choices.lower() == "balance 2":
+        tree_choices_arr = [1, 5, 2, 1]
+    elif config.tree_choices.lower() == "balance_1" or config.tree_choices.lower() == "balance-1" or config.tree_choices.lower() == "balance 1":
+        tree_choices_arr = [1, 4, 2, 1]
+    else:
+        raise Exception(f"{config.tree_choices} is not one of the options")
+
     max_eval_batches = 50
     for i, batch in enumerate(eval_dataloader):
         if i >= max_eval_batches:
             break
-        loss = compute_eagle_loss(student, base_model, batch, device)
+        loss = compute_eagle_loss(student, base_model, batch, device, tree_choice=tree_choices_arr)
         total_loss += loss.item()
         count += 1
 
@@ -115,7 +182,7 @@ def grad_norm(model: torch.nn.Module) -> float:
             total_norm += param_norm.item() ** 2
     return total_norm ** 0.5
 
-def run_eagle_training(config, base_model, eagle_module, tokenizer):
+def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:list[int]):
     device = next(eagle_module.parameters()).device
     os.makedirs(config.output_dir, exist_ok=True)
 
@@ -236,7 +303,14 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
             if global_step>= max_steps:
                 break
             optimizer.zero_grad()
-            loss = compute_eagle_loss(eagle_module, base_model, batch, device=device)
+            loss = compute_eagle_loss(
+                eagle_module,
+                base_model,
+                batch,
+                tree_choice=tree_choice,
+                config=config,
+                device=device
+            )
 
             if torch.isnan(loss) or loss.item() == 0.0:
                 logger.warning(f"Step {global_step} | Encountered zero or NaN loss. Check target logprobs generation.")
@@ -259,7 +333,7 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
 
             global_step += 1
             if global_step % eval_every == 0 and len(eval_dataset) > 0:
-                eval_loss = _compute_eval_loss(eagle_module, base_model, eval_dataloader, device)
+                eval_loss = _compute_eval_loss(eagle_module, base_model, eval_dataloader, device,config)
                 logger.info(f"Step {global_step} | Eval loss: {eval_loss:.4f}")
                 wandb.log({"eval/loss": eval_loss, "step": global_step})
                 if eval_loss < best_eval_loss:

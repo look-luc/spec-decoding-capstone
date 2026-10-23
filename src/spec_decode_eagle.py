@@ -2,6 +2,7 @@ import time
 from typing import Literal, cast
 
 import torch
+import torch.nn as nn
 
 
 def get_stop_token_ids(tokenizer, eos_token_id=None):
@@ -221,7 +222,7 @@ def eagle_draft_tree_expansion(
     generated_tokens,
     cur_gen_idx,
     mode,
-    score_threshold: float = 0.01  # Minimum cumulative score to keep a branch
+    score_threshold: float = 0.01
 ):
     tree_nodes = []
 
@@ -247,36 +248,47 @@ def eagle_draft_tree_expansion(
         next_parents = []
 
         for parent in active_parents:
-            token_id_tensor = parent.token_id
-            token_id_input = token_id_tensor.unsqueeze(0) if token_id_tensor.ndim == 0 else token_id_tensor
+            # Collect all hidden states from root down to this parent to form a proper draft history sequence
+            path_nodes = []
+            curr = parent
+            while curr is not None:
+                path_nodes.append(curr)
+                curr = curr.parent
+            path_nodes.reverse()
 
-            token_emb = eagle_module.get_embedding(token_id_input).squeeze(0)
+            # Build batched tensors for the path sequence [1, path_len, hidden_dim]
+            path_tokens = torch.stack([node.token_id for node in path_nodes])
+            if path_tokens.ndim == 1:
+                path_tokens = path_tokens.unsqueeze(0)
 
-            hidden_state = parent.hidden_state
-            if hidden_state.ndim > 1:
-                hidden_state = hidden_state.squeeze(0)
+            path_hiddens = torch.stack([node.hidden_state for node in path_nodes])
+            if path_hiddens.ndim == 2:
+                path_hiddens = path_hiddens.unsqueeze(0)
 
-            fused_feat = torch.cat([token_emb, hidden_state], dim=-1)
+            token_embs = eagle_module.get_embedding(path_tokens)
+            fused_feat = torch.cat([token_embs, path_hiddens], dim=-1)
             projected = eagle_module.fc_fusion(fused_feat)
 
-            proj_batched = projected.unsqueeze(0).unsqueeze(0)
-            seq_len = proj_batched.size(1)
-            tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=proj_batched.device) if seq_len > 1 else None
+            seq_len = projected.size(1)
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=projected.device) if seq_len > 1 else None
 
+            # Run transformer decoder layer over the path sequence
             next_hidden_batched = eagle_module.decoder_layer(
-                proj_batched,
-                proj_batched,
+                projected,
+                projected,
                 tgt_mask=tgt_mask,
                 tgt_is_causal=(seq_len > 1)
             )
-            next_hidden = next_hidden_batched.squeeze(0).squeeze(0)
 
+            # Take the hidden state of the last position in the path
+            next_hidden = next_hidden_batched.squeeze(0)[-1, :]
             draft_raw_logits = eagle_module.lm_head(next_hidden)
 
-            path_tokens = get_ancestor_tokens(parent)
-            path_tensor = torch.tensor(path_tokens, dtype=generated_tokens.dtype, device=generated_tokens.device)
+            # Build repetition penalty context from prompt + ancestor tokens
+            ancestor_token_list = get_ancestor_tokens(parent)
+            ancestor_tensor = torch.tensor(ancestor_token_list, dtype=generated_tokens.dtype, device=generated_tokens.device)
             full_context = torch.cat(
-                [generated_tokens[0, :cur_gen_idx], path_tensor],
+                [generated_tokens[0, :cur_gen_idx], ancestor_tensor],
                 dim=-1
             )
             penalty_context = sliding_window(
@@ -304,7 +316,6 @@ def eagle_draft_tree_expansion(
             for k_idx in range(branch_factor):
                 child_score = parent.score * torch.exp(top_scores[k_idx])
 
-                # Prune branches that fall below our confidence threshold
                 if child_score >= score_threshold:
                     child_node = create_node(
                         index=len(tree_nodes),
