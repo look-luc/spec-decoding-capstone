@@ -24,11 +24,9 @@ def compute_eagle_loss(
     base_model: nn.Module,
     batch: dict,
     config,
-    tree_choice:list[int],
     device: torch.device = None,
 ) -> torch.Tensor:
     top_k: int = config.top_k
-    max_lookahead: int = tree_choice[-1]
     if device is None:
         device = next(base_model.parameters()).device
 
@@ -48,11 +46,6 @@ def compute_eagle_loss(
             target_log_softmax = torch.nn.functional.log_softmax(base_logits, dim=-1)
             target_logprobs, target_indices = torch.topk(target_log_softmax, k=top_k, dim=-1)
 
-        bs, seq_len = input_ids.shape
-        total_loss = 0.0
-        valid_steps = 0
-
-        # Step 1: Standard causal forward pass over base hidden states
         draft_tokens = input_ids[:, :-1]
         draft_logits = base_hidden_states[:, :-1, :]
         pred_hidden, pred_logits = eagle_module(
@@ -69,55 +62,15 @@ def compute_eagle_loss(
             dim=-1, index=matched_target_indices
         )
 
-        ce_loss_step1 = -(
+        cross_entropy_loss = -(
             torch.exp(shifted_target_logprobs) * gathered_student_logprobs
         ).sum(-1)
 
-        total_loss = total_loss + (ce_loss_step1 * mask).sum() / mask.sum().clamp(min=1)
-        valid_steps += 1
-
-        # Multi-step lookahead rollout supervision for deeper tree accuracy
-        curr_hidden = pred_hidden
-        for step in range(2, max_lookahead + 1):
-            if seq_len <= step:
-                break
-
-            step_tokens = input_ids[:, step - 1 : -1]
-            step_hidden = curr_hidden[:, :-1, :]
-
-            if step_tokens.size(1) == 0:
-                break
-
-            step_pred_hidden, step_pred_logits = eagle_module(
-                token_id=step_tokens,
-                hidden_state=step_hidden,
-            )
-
-            step_target_logprobs = target_logprobs[:, step:, :]
-            step_target_indices = target_indices[:, step:, :]
-            step_mask = label_mask[:, step - 1 :]
-
-            min_len = min(step_pred_logits.size(1), step_target_logprobs.size(1), step_mask.size(1))
-            if min_len <= 0:
-                continue
-
-            step_student_logprobs = torch.nn.functional.log_softmax(step_pred_logits[:, :min_len, :], dim=-1)
-            step_gathered = step_student_logprobs.gather(
-                dim=-1, index=step_target_indices[:, :min_len, :]
-            )
-
-            ce_loss_step = -(
-                torch.exp(step_target_logprobs[:, :min_len, :]) * step_gathered
-            ).sum(-1)
-
-            step_loss_val = (ce_loss_step * step_mask[:, :min_len]).sum() / step_mask[:, :min_len].sum().clamp(min=1)
-
-            # Apply exponential decay weight for deeper lookahead steps
-            total_loss = total_loss + (0.5 ** (step - 1)) * step_loss_val
-            valid_steps += 1
-            curr_hidden = step_pred_hidden
-
-        final_loss = total_loss / valid_steps
+        mask_sum = mask.sum()
+        if mask_sum > 0:
+            final_loss = (cross_entropy_loss * mask).sum() / mask_sum
+        else:
+            final_loss = torch.tensor(0.0, device=device, requires_grad=True)
 
     return final_loss
 
@@ -131,17 +84,17 @@ def _compute_eval_loss(student: torch.nn.Module, base_model: torch.nn.Module, ev
     count = 0
 
     tree_choices_arr = []
-    if config.tree_choices.lower() == "eagle_1" or config.tree_choices.lower() == "eagle-1" or config.tree_choices.lower() == "eagle 1":
-        tree_choices_arr = [1,4,2,2]
-    elif config.tree_choices.lower() == "eagle_2" or config.tree_choices.lower() == "eagle-2" or config.tree_choices.lower() == "eagle 2":
+    if config.tree_choices.lower() in ["eagle_1", "eagle-1", "eagle 1"]:
+        tree_choices_arr = [1, 4, 2, 2]
+    elif config.tree_choices.lower() in ["eagle_2", "eagle-2", "eagle 2"]:
         tree_choices_arr = [1, 8, 4, 2]
     elif config.tree_choices.lower() == "custom":
         tree_choices_arr = [1, 4, 2, 3]
     elif config.tree_choices.lower() == "conservative":
         tree_choices_arr = [1, 3, 2, 1]
-    elif config.tree_choices.lower() == "balance_2" or config.tree_choices.lower() == "balance-2" or config.tree_choices.lower() == "balance 2":
+    elif config.tree_choices.lower() in ["balance_2", "balance-2", "balance 2"]:
         tree_choices_arr = [1, 5, 2, 1]
-    elif config.tree_choices.lower() == "balance_1" or config.tree_choices.lower() == "balance-1" or config.tree_choices.lower() == "balance 1":
+    elif config.tree_choices.lower() in ["balance_1", "balance-1", "balance 1"]:
         tree_choices_arr = [1, 4, 2, 1]
     else:
         raise Exception(f"{config.tree_choices} is not one of the options")
@@ -150,7 +103,14 @@ def _compute_eval_loss(student: torch.nn.Module, base_model: torch.nn.Module, ev
     for i, batch in enumerate(eval_dataloader):
         if i >= max_eval_batches:
             break
-        loss = compute_eagle_loss(student, base_model, batch, device, tree_choice=tree_choices_arr)
+        # Use explicit keyword arguments to avoid positional mismatch
+        loss = compute_eagle_loss(
+            eagle_module=student,
+            base_model=base_model,
+            batch=batch,
+            config=config,
+            device=device
+        )
         total_loss += loss.item()
         count += 1
 
@@ -159,7 +119,6 @@ def _compute_eval_loss(student: torch.nn.Module, base_model: torch.nn.Module, ev
         torch.cuda.empty_cache()
 
     return total_loss / max(count, 1)
-
 
 def save_eagle_checkpoint(eagle_module: nn.Module, output_dir: str, label: str = "final"):
     """Saves EAGLE module state dictionary to output directory."""
@@ -217,8 +176,9 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
     logger.info(f"Split: {len(train_dataset)} train, {len(eval_dataset)} eval examples")
 
     def collate_fn(batch):
-        bs = len(batch)
         token_lists = []
+        valid_batch_items = []
+
         for r in batch:
             if "token_ids" in r and r["token_ids"] is not None:
                 ids = r["token_ids"]
@@ -229,7 +189,15 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
             else:
                 string_val = next((v for k, v in r.items() if k != "origin" and isinstance(v, str)), None)
                 ids = tokenizer.encode(string_val, add_special_tokens=True)
-            token_lists.append(ids)
+
+            if len(ids) > 1:
+                token_lists.append(ids)
+                valid_batch_items.append(r)
+
+        bs = len(token_lists)
+        if bs == 0:
+            # Fallback for empty batch
+            return None
 
         seq_len = max(len(ids) for ids in token_lists)
         topk = getattr(config, "top_k", 50) if getattr(config, "top_k", 50) > 0 else 50
@@ -243,20 +211,24 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
         for idx in range(bs):
             ids = token_lists[idx]
             item_seq_len = len(ids)
-            item_prompt_len = batch[idx].get("prompt_length", 1)
+            item_prompt_len = valid_batch_items[idx].get("prompt_length", 1)
+            if item_prompt_len >= item_seq_len:
+                item_prompt_len = 1
 
             input_ids[idx][:item_seq_len] = torch.as_tensor(ids)
             attention_mask[idx][:item_seq_len] = 1
 
-            # If dataset lacks precomputed logprobs, fallback to uniform/dummy or standard CE targets
-            if "logprobs" in batch[idx] and batch[idx]["logprobs"] is not None:
-                lp = batch[idx]["logprobs"]
-                lpi = batch[idx].get("logprobs_vocab_idx", batch[idx].get("topk_logprobs_indices"))
+            if "logprobs" in valid_batch_items[idx] and valid_batch_items[idx]["logprobs"] is not None:
+                lp = valid_batch_items[idx]["logprobs"]
+                lpi = valid_batch_items[idx].get("logprobs_vocab_idx", valid_batch_items[idx].get("topk_logprobs_indices"))
                 if lp and lpi:
                     topk_logprobs[idx][item_prompt_len - 1 : item_seq_len - 1] = torch.as_tensor(lp[:item_seq_len - item_prompt_len])
                     topk_logprobs_indices[idx][item_prompt_len - 1 : item_seq_len - 1] = torch.as_tensor(lpi[:item_seq_len - item_prompt_len])
 
-            label_mask[idx][item_prompt_len - 1 : item_seq_len - 1] = 1.0
+            start_idx = max(0, item_prompt_len - 1)
+            end_idx = item_seq_len - 1
+            if start_idx < end_idx:
+                label_mask[idx][start_idx:end_idx] = 1.0
 
         return {
             "input_ids": input_ids,
@@ -307,7 +279,6 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
                 eagle_module,
                 base_model,
                 batch,
-                tree_choice=tree_choice,
                 config=config,
                 device=device
             )
