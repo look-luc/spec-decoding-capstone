@@ -19,16 +19,39 @@ from src.data.dataset import assemble_dataset
 logger = logging.getLogger(__name__)
 
 
+def parse_tree_choices(tree_choice_arg: str | list[int]) -> list[int]:
+    """Helper to consistently parse tree choice arguments into an array."""
+    if isinstance(tree_choice_arg, list):
+        return tree_choice_arg
+
+    tc = tree_choice_arg.lower()
+    if tc in ["eagle_1", "eagle-1", "eagle 1"]:
+        return [1, 4, 2, 2]
+    elif tc in ["eagle_2", "eagle-2", "eagle 2"]:
+        return [1, 8, 4, 2]
+    elif tc == "custom":
+        return [1, 4, 2, 3]
+    elif tc == "conservative":
+        return [1, 3, 2, 1]
+    elif tc in ["balance_2", "balance-2", "balance 2"]:
+        return [1, 5, 2, 1]
+    elif tc in ["balance_1", "balance-1", "balance 1"]:
+        return [1, 4, 2, 1]
+    else:
+        raise ValueError(f"Unknown tree choices option: {tree_choice_arg}")
+
+
 def compute_eagle_loss(
     eagle_module: nn.Module,
     base_model: nn.Module,
     batch: dict,
     config,
-    tree_choice:list[int],
+    tree_choices_arr: list[int],
     device: torch.device = None,
 ) -> torch.Tensor:
-    top_k: int = config.top_k
-    max_lookahead: int = tree_choice[-1]
+    top_k: int = getattr(config, "top_k", 50)
+    max_lookahead: int = len(tree_choices_arr)
+
     if device is None:
         device = next(base_model.parameters()).device
 
@@ -45,14 +68,15 @@ def compute_eagle_loss(
             )
             base_hidden_states = base_outputs.hidden_states[-1]
             base_logits = base_outputs.logits
-            target_log_softmax = torch.nn.functional.log_softmax(base_logits, dim=-1)
+
+            # Force FP32 for target log-softmax and topk extraction
+            target_log_softmax = torch.nn.functional.log_softmax(base_logits.float(), dim=-1)
             target_logprobs, target_indices = torch.topk(target_log_softmax, k=top_k, dim=-1)
 
-        bs, seq_len = input_ids.shape
         total_loss = 0.0
         valid_steps = 0
 
-        # Step 1: Standard causal forward pass over base hidden states
+        # Step 1: Base draft prediction (Depth 1)
         draft_tokens = input_ids[:, :-1]
         draft_logits = base_hidden_states[:, :-1, :]
         pred_hidden, pred_logits = eagle_module(
@@ -64,28 +88,27 @@ def compute_eagle_loss(
         matched_target_indices = target_indices[:, 1:, :]
         mask = label_mask
 
-        student_logprobs = torch.nn.functional.log_softmax(pred_logits, dim=-1)
+        # CRITICAL FIX: Re-normalize top-k target logprobs so probabilities sum to 1.0
+        target_probs = torch.softmax(shifted_target_logprobs, dim=-1)
+
+        student_logprobs = torch.nn.functional.log_softmax(pred_logits.float(), dim=-1)
         gathered_student_logprobs = student_logprobs.gather(
             dim=-1, index=matched_target_indices
         )
 
-        ce_loss_step1 = -(
-            torch.exp(shifted_target_logprobs) * gathered_student_logprobs
-        ).sum(-1)
+        ce_loss_step1 = -(target_probs * gathered_student_logprobs).sum(-1)
+        mask_sum = mask.sum()
 
-        total_loss = total_loss + (ce_loss_step1 * mask).sum() / mask.sum().clamp(min=1)
-        valid_steps += 1
+        if mask_sum > 0:
+            total_loss = total_loss + (ce_loss_step1 * mask).sum() / mask_sum
+            valid_steps += 1
 
-        # Multi-step lookahead rollout supervision for deeper tree accuracy
-        curr_hidden = pred_hidden
+        # Steps 2 to max_lookahead: Multi-step rollout supervision for deeper tree depths
         for step in range(2, max_lookahead + 1):
-            if seq_len <= step:
-                break
-
             step_tokens = input_ids[:, step - 1 : -1]
-            step_hidden = curr_hidden[:, :-1, :]
+            step_hidden = base_hidden_states[:, step - 1 : -1, :]
 
-            if step_tokens.size(1) == 0:
+            if step_tokens.size(1) == 0 or step_hidden.size(1) == 0:
                 break
 
             step_pred_hidden, step_pred_logits = eagle_module(
@@ -101,56 +124,54 @@ def compute_eagle_loss(
             if min_len <= 0:
                 continue
 
+            step_target_probs = torch.softmax(step_target_logprobs[:, :min_len, :], dim=-1)
             step_student_logprobs = torch.nn.functional.log_softmax(step_pred_logits[:, :min_len, :], dim=-1)
             step_gathered = step_student_logprobs.gather(
                 dim=-1, index=step_target_indices[:, :min_len, :]
             )
 
-            ce_loss_step = -(
-                torch.exp(step_target_logprobs[:, :min_len, :]) * step_gathered
-            ).sum(-1)
+            ce_loss_step = -(step_target_probs * step_gathered).sum(-1)
+            step_mask_sum = step_mask[:, :min_len].sum()
 
-            step_loss_val = (ce_loss_step * step_mask[:, :min_len]).sum() / step_mask[:, :min_len].sum().clamp(min=1)
+            if step_mask_sum > 0:
+                step_loss_val = (ce_loss_step * step_mask[:, :min_len]).sum() / step_mask_sum
+                # Apply exponential decay weight for deeper lookahead steps
+                total_loss = total_loss + (0.5 ** (step - 1)) * step_loss_val
+                valid_steps += 1
 
-            # Apply exponential decay weight for deeper lookahead steps
-            total_loss = total_loss + (0.5 ** (step - 1)) * step_loss_val
-            valid_steps += 1
-            curr_hidden = step_pred_hidden
-
-        final_loss = total_loss / valid_steps
+        final_loss = total_loss / max(valid_steps, 1)
 
     return final_loss
 
+
 @torch.no_grad()
-def _compute_eval_loss(student: torch.nn.Module, base_model: torch.nn.Module, eval_dataloader: DataLoader, device: torch.device, config) -> float:
+def _compute_eval_loss(
+    student: torch.nn.Module,
+    base_model: torch.nn.Module,
+    eval_dataloader: DataLoader,
+    device: torch.device,
+    config,
+    tree_choices_arr: list[int],
+) -> float:
     student.eval()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
     total_loss = 0.0
     count = 0
-
-    tree_choices_arr = []
-    if config.tree_choices.lower() == "eagle_1" or config.tree_choices.lower() == "eagle-1" or config.tree_choices.lower() == "eagle 1":
-        tree_choices_arr = [1,4,2,2]
-    elif config.tree_choices.lower() == "eagle_2" or config.tree_choices.lower() == "eagle-2" or config.tree_choices.lower() == "eagle 2":
-        tree_choices_arr = [1, 8, 4, 2]
-    elif config.tree_choices.lower() == "custom":
-        tree_choices_arr = [1, 4, 2, 3]
-    elif config.tree_choices.lower() == "conservative":
-        tree_choices_arr = [1, 3, 2, 1]
-    elif config.tree_choices.lower() == "balance_2" or config.tree_choices.lower() == "balance-2" or config.tree_choices.lower() == "balance 2":
-        tree_choices_arr = [1, 5, 2, 1]
-    elif config.tree_choices.lower() == "balance_1" or config.tree_choices.lower() == "balance-1" or config.tree_choices.lower() == "balance 1":
-        tree_choices_arr = [1, 4, 2, 1]
-    else:
-        raise Exception(f"{config.tree_choices} is not one of the options")
-
     max_eval_batches = 50
+
     for i, batch in enumerate(eval_dataloader):
         if i >= max_eval_batches:
             break
-        loss = compute_eagle_loss(student, base_model, batch, device, tree_choice=tree_choices_arr)
+        loss = compute_eagle_loss(
+            eagle_module=student,
+            base_model=base_model,
+            batch=batch,
+            config=config,
+            tree_choices_arr=tree_choices_arr,
+            device=device,
+        )
         total_loss += loss.item()
         count += 1
 
@@ -162,7 +183,6 @@ def _compute_eval_loss(student: torch.nn.Module, base_model: torch.nn.Module, ev
 
 
 def save_eagle_checkpoint(eagle_module: nn.Module, output_dir: str, label: str = "final"):
-    """Saves EAGLE module state dictionary to output directory."""
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, f"eagle_module_{label}.pt")
 
@@ -174,6 +194,7 @@ def save_eagle_checkpoint(eagle_module: nn.Module, output_dir: str, label: str =
     torch.save(state_dict, save_path)
     logger.info(f"Saved EAGLE weights to: {save_path}")
 
+
 def grad_norm(model: torch.nn.Module) -> float:
     total_norm = 0.0
     for p in model.parameters():
@@ -182,14 +203,22 @@ def grad_norm(model: torch.nn.Module) -> float:
             total_norm += param_norm.item() ** 2
     return total_norm ** 0.5
 
-def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:list[int]):
+
+def run_eagle_training(config, base_model, eagle_module, tokenizer):
     device = next(eagle_module.parameters()).device
     os.makedirs(config.output_dir, exist_ok=True)
+
+    # Freeze base model weights and set to eval mode
+    base_model.eval()
+    for param in base_model.parameters():
+        param.requires_grad = False
+
+    tree_choices_arr = parse_tree_choices(config.tree_choices)
 
     if wandb.run is None:
         wandb.init(
             project=getattr(config, "wandb_project", "speculative decoding capstone"),
-            config=asdict(config) if hasattr(config, "__dataclass_fields__") else vars(config)
+            config=asdict(config) if hasattr(config, "__dataclass_fields__") else vars(config),
         )
 
     optimizer = optim.AdamW(eagle_module.parameters(), lr=config.learning_rate)
@@ -217,8 +246,10 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
     logger.info(f"Split: {len(train_dataset)} train, {len(eval_dataset)} eval examples")
 
     def collate_fn(batch):
-        bs = len(batch)
         token_lists = []
+        valid_batch_items = []
+        pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else (tokenizer.eos_token_id or 0)
+
         for r in batch:
             if "token_ids" in r and r["token_ids"] is not None:
                 ids = r["token_ids"]
@@ -229,12 +260,19 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
             else:
                 string_val = next((v for k, v in r.items() if k != "origin" and isinstance(v, str)), None)
                 ids = tokenizer.encode(string_val, add_special_tokens=True)
-            token_lists.append(ids)
+
+            if len(ids) > 1:
+                token_lists.append(ids)
+                valid_batch_items.append(r)
+
+        bs = len(token_lists)
+        if bs == 0:
+            return None
 
         seq_len = max(len(ids) for ids in token_lists)
-        topk = getattr(config, "top_k", 50) if getattr(config, "top_k", 50) > 0 else 50
+        topk = getattr(config, "top_k", 50)
 
-        input_ids = torch.full((bs, seq_len), tokenizer.pad_token_id or 0, dtype=torch.long)
+        input_ids = torch.full((bs, seq_len), pad_id, dtype=torch.long)
         attention_mask = torch.zeros((bs, seq_len), dtype=torch.long)
         topk_logprobs = torch.zeros((bs, seq_len - 1, topk), dtype=torch.float32)
         topk_logprobs_indices = torch.zeros((bs, seq_len - 1, topk), dtype=torch.long)
@@ -243,20 +281,21 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
         for idx in range(bs):
             ids = token_lists[idx]
             item_seq_len = len(ids)
-            item_prompt_len = batch[idx].get("prompt_length", 1)
+            item_prompt_len = valid_batch_items[idx].get("prompt_length", 1)
+            if item_prompt_len >= item_seq_len:
+                item_prompt_len = 1
 
             input_ids[idx][:item_seq_len] = torch.as_tensor(ids)
             attention_mask[idx][:item_seq_len] = 1
 
-            # If dataset lacks precomputed logprobs, fallback to uniform/dummy or standard CE targets
-            if "logprobs" in batch[idx] and batch[idx]["logprobs"] is not None:
-                lp = batch[idx]["logprobs"]
-                lpi = batch[idx].get("logprobs_vocab_idx", batch[idx].get("topk_logprobs_indices"))
-                if lp and lpi:
-                    topk_logprobs[idx][item_prompt_len - 1 : item_seq_len - 1] = torch.as_tensor(lp[:item_seq_len - item_prompt_len])
-                    topk_logprobs_indices[idx][item_prompt_len - 1 : item_seq_len - 1] = torch.as_tensor(lpi[:item_seq_len - item_prompt_len])
+            start_idx = max(0, item_prompt_len - 1)
+            end_idx = item_seq_len - 1
+            if start_idx >= end_idx and item_seq_len > 1:
+                start_idx = 0
+                end_idx = item_seq_len - 1
 
-            label_mask[idx][item_prompt_len - 1 : item_seq_len - 1] = 1.0
+            if start_idx < end_idx:
+                label_mask[idx][start_idx:end_idx] = 1.0
 
         return {
             "input_ids": input_ids,
@@ -273,7 +312,7 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
         collate_fn=collate_fn,
     )
     eval_dataloader = DataLoader(
-        eval_dataset,  # type: ignore[arg-type]
+        eval_dataset,
         batch_size=getattr(config, "batch_size", 16),
         shuffle=False,
         pin_memory=(device.type == "cuda"),
@@ -290,8 +329,6 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
     max_steps = getattr(config, "max_steps", 1000)
     log_every = getattr(config, "log_every", 10)
     eval_every = getattr(config, "eval_every", 100)
-    step = start_step
-    target_step = start_step + config.max_steps
     accum_count = 0
     log_accum_loss = 0.0
     log_micro_count = 0
@@ -300,20 +337,24 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
 
     while global_step < max_steps:
         for batch_idx, batch in enumerate(dataloader):
-            if global_step>= max_steps:
+            if batch is None:
+                continue
+            if global_step >= max_steps:
                 break
+
             optimizer.zero_grad()
             loss = compute_eagle_loss(
-                eagle_module,
-                base_model,
-                batch,
-                tree_choice=tree_choice,
+                eagle_module=eagle_module,
+                base_model=base_model,
+                batch=batch,
                 config=config,
-                device=device
+                tree_choices_arr=tree_choices_arr,
+                device=device,
             )
 
-            if torch.isnan(loss) or loss.item() == 0.0:
-                logger.warning(f"Step {global_step} | Encountered zero or NaN loss. Check target logprobs generation.")
+            # Check for numerical NaN/Inf failures instead of false zero alarms
+            if torch.isnan(loss) or torch.isinf(loss):
+                logger.warning(f"Step {global_step} | Encountered NaN or Inf loss.")
 
             scaler.scale(loss / config.grad_accum_steps).backward()
             accum_count += 1
@@ -330,10 +371,13 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
             scaler.update()
             scheduler.step()
             optimizer.zero_grad()
+            accum_count = 0
 
             global_step += 1
             if global_step % eval_every == 0 and len(eval_dataset) > 0:
-                eval_loss = _compute_eval_loss(eagle_module, base_model, eval_dataloader, device,config)
+                eval_loss = _compute_eval_loss(
+                    eagle_module, base_model, eval_dataloader, device, config, tree_choices_arr
+                )
                 logger.info(f"Step {global_step} | Eval loss: {eval_loss:.4f}")
                 wandb.log({"eval/loss": eval_loss, "step": global_step})
                 if eval_loss < best_eval_loss:
@@ -342,9 +386,9 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
                         eagle_module, tokenizer, optimizer, config.output_dir, "best", repo_name,
                         push_to_hub=False, scheduler=scheduler,
                     )
-            # Log to Wandb
+
             if global_step % log_every == 0:
-                avg_loss = log_accum_loss / log_micro_count
+                avg_loss = log_accum_loss / max(log_micro_count, 1)
                 current_lr = scheduler.get_last_lr()[0]
                 elapsed = time.time() - start_time
                 logger.info(
@@ -352,14 +396,17 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer, tree_choice:
                     f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s"
                 )
                 wandb.log({
-                    "train/loss": loss.item(),
+                    "train/loss": avg_loss,
                     "train/lr": current_lr,
                     "train/grad_norm": unclipped_grad_norm,
                     "train/epoch": global_step,
                     "step": global_step
                 })
+                log_accum_loss = 0.0
+                log_micro_count = 0
 
     save_eagle_checkpoint(eagle_module, config.output_dir, label="final")
+
 
 def _restore_training_state(config: Any, optimizer: optim.Optimizer, scheduler: LambdaLR, device: torch.device) -> int:
     start_step = 0
@@ -371,22 +418,16 @@ def _restore_training_state(config: Any, optimizer: optim.Optimizer, scheduler: 
 
         opt_path = os.path.join(resume_from, "optimizer.pt")
         if os.path.exists(opt_path):
-            logger.info(f"Loading optimizer state from {opt_path}")
             optimizer.load_state_dict(torch.load(opt_path, map_location=device))
-        else:
-            logger.warning("No optimizer state found — learning rates will reset")
 
         sched_path = os.path.join(resume_from, "scheduler.pt")
         if os.path.exists(sched_path):
-            logger.info(f"Loading scheduler state from {sched_path}")
             scheduler.load_state_dict(torch.load(sched_path, map_location=device))
         elif start_step > 0:
-            logger.warning(
-                f"No scheduler state found — fast-forwarding scheduler to step {start_step}"
-            )
             for _ in range(start_step):
                 scheduler.step()
     return start_step
+
 
 def _build_scheduler(optimizer: optim.Optimizer, config: Any) -> LambdaLR:
     max_steps = getattr(config, "max_steps", 225)
@@ -395,12 +436,12 @@ def _build_scheduler(optimizer: optim.Optimizer, config: Any) -> LambdaLR:
     def lr_lambda(current_step: int) -> float:
         if current_step < warmup_steps:
             return float(current_step) / float(max(1, warmup_steps))
-
         progress = float(current_step - warmup_steps) / float(max(1, max_steps - warmup_steps))
         cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
         return max(0.2, cosine_decay)
 
     return LambdaLR(optimizer, lr_lambda)
+
 
 def _save_checkpoint(
     student,
@@ -427,16 +468,7 @@ def _save_checkpoint(
     torch.save(optimizer.state_dict(), os.path.join(path, "optimizer.pt"))
     if scheduler is not None:
         torch.save(scheduler.state_dict(), os.path.join(path, "scheduler.pt"))
-    logger.info(f"Saved checkpoint: {path}")
 
-    if push_to_hub and repo_name:
-        hub_repo = f"{repo_name}-{label}" if isinstance(label, int) else repo_name
-        logger.info(f"Pushing to HF Hub: {hub_repo}")
-        if hasattr(student, "push_to_hub"):
-            student.push_to_hub(hub_repo, commit_message=f"Distilled model (step {label})")
-        if tokenizer is not None and hasattr(tokenizer, "push_to_hub"):
-            tokenizer.push_to_hub(hub_repo, commit_message=f"Tokenizer (step {label})")
-        logger.info(f"Pushed: https://huggingface.co/{hub_repo}")
 
 def build_repo_name(cfg: Any) -> str:
     hf_repo_id = getattr(cfg, "hf_repo_id", None)
@@ -447,35 +479,5 @@ def build_repo_name(cfg: Any) -> str:
     lang = getattr(cfg, "language_code", "en")
     return f"{model_short}-medusa-{lang}"
 
-def _model_short_name(model_name: str | None) -> str:
-    if not model_name:
-        return "unknown_model"
-    return model_name.strip("/").split("/")[-1]
 
-def setup_wandb(config: Any):
-    model_short = _model_short_name(config.draft_model or config.target_model)
-    group = f"distill_{model_short}__{config.language_code}"
-
-    tags = [
-        "distillation",
-        config.language_code,
-        config.task,
-        model_short,
-        f"lr={config.learning_rate}",
-        f"steps={config.max_steps}",
-        f"ga={config.grad_accum_steps}",
-    ]
-
-    run = wandb.init(
-        project=config.wandb_project,
-        entity=os.getenv("WANDB_ENTITY", None),
-        config=asdict(config),
-        group=group,
-        job_type=f"distill-{config.task}",
-        tags=tags,
-        name=f"{config.draft_model_type} {config.max_steps} {config.tree_choices} {config.decoding_mode}",
-    )
-    wandb.define_metric("step")
-    wandb.define_metric("train/*", step_metric="step")
-    wandb.define_metric("eval/*", step_metric="step")
-    return run
+def _model_short_name
