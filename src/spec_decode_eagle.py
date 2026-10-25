@@ -122,28 +122,26 @@ def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
     for layer_kv in kv_cache:
         if isinstance(layer_kv, torch.Tensor):
             base_state = layer_kv[..., :base_seq_len]
-            path_state = layer_kv[..., base_seq_len+accepted_idxs]
+            path_state = layer_kv[..., base_seq_len + accepted_idxs]
             new_state = torch.concat(
-                base_state,
-                path_state,
+                [base_state, path_state],
                 dim=-1
             )
+            updated_kv_cache.append(new_state)
         elif len(layer_kv) == 2:
             key_state, value_states = layer_kv
 
             base_keys = key_state[..., :base_seq_len, :]
             base_values = value_states[..., :base_seq_len, :]
-            path_keys = key_state[..., base_seq_len+accepted_idxs, :]
-            path_values = value_states[..., base_seq_len+accepted_idxs, :]
+            path_keys = key_state[..., base_seq_len + accepted_idxs, :]
+            path_values = value_states[..., base_seq_len + accepted_idxs, :]
 
             new_keys = torch.concat(
-                base_keys,
-                path_keys,
+                [base_keys, path_keys],
                 dim=-2
             )
             new_values = torch.concat(
-                base_values,
-                path_values,
+                [base_values, path_values],
                 dim=-2
             )
 
@@ -411,6 +409,10 @@ def spec_decode_eagle(
         tree_choices_arr = [1, 5, 2, 1]
     elif tree_choices.lower() == "balance_1" or tree_choices.lower() == "balance-1" or tree_choices.lower() == "balance 1":
         tree_choices_arr = [1, 4, 2, 1]
+    elif tree_choices.lower() in ["shallow 1", "shallow_1", "shallow-1", "shallow1"]:
+        tree_choices_arr = [1, 8, 2]
+    elif tree_choices.lower() in ["shallow 2", "shallow_2", "shallow-2", "shallow2"]:
+        tree_choices_arr = [1, 12]
     else:
         raise Exception(f"{tree_choices} is not one of the options")
 
@@ -637,7 +639,12 @@ def spec_decode_eagle(
             total_matched_tokens = total_matched_tokens + best_accept_count
             total_draft_tokens = total_draft_tokens + len(tree_nodes) - 1
 
-            # Crop cache back to base_seq_len and natively forward the accepted tokens
+            if len(best_path) > 0:
+                last_accepted_node = best_path[-1]
+                last_hidden = verifier_hiddens[:, last_accepted_node.index, :]
+            else:
+                last_hidden = tree_nodes[0].hidden_state
+
             base_kv_cache = crop_kv_cache(target_out.past_key_values, base_seq_len)
             final_target_out = target_model(
                 input_ids=tokens_to_add,

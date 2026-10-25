@@ -24,7 +24,8 @@ def compute_eagle_loss(
     base_model: nn.Module,
     batch: dict,
     device: torch.device = None,
-    top_k: int = 50,
+    top_k: int = 30,
+    beta: float = 0.5
 ) -> torch.Tensor:
     if device is None:
         device = next(base_model.parameters()).device
@@ -42,6 +43,9 @@ def compute_eagle_loss(
             )
             base_hidden_states = base_outputs.hidden_states[-1]
             base_logits = base_outputs.logits
+
+            greedy_targets = torch.argmax(base_logits, dim=-1)
+
             target_log_softmax = torch.nn.functional.log_softmax(base_logits.float(), dim=-1)
             target_logprobs, target_indices = torch.topk(target_log_softmax, k=top_k, dim=-1)
 
@@ -55,22 +59,36 @@ def compute_eagle_loss(
 
         shifted_target_logprobs = target_logprobs[:, 1:, :]
         matched_target_indices = target_indices[:, 1:, :]
+        shifted_greedy_targets = greedy_targets[:, 1:]
         mask = label_mask
 
-        # Re-normalize top-k probabilities to sum to 1.0
         target_probs = torch.softmax(shifted_target_logprobs, dim=-1)
         student_logprobs = torch.nn.functional.log_softmax(pred_logits.float(), dim=-1)
 
         gathered_student_logprobs = student_logprobs.gather(
             dim=-1, index=matched_target_indices
         )
+        kl_loss = -(target_probs * gathered_student_logprobs).sum(dim=-1)
 
-        cross_entropy_loss = -(target_probs * gathered_student_logprobs).sum(-1)
+        ce_loss = torch.nn.functional.cross_entropy(
+            pred_logits.reshape(-1, pred_logits.size(-1)),
+            shifted_greedy_targets.reshape(-1),
+            reduction="none"
+        ).reshape(shifted_greedy_targets.shape)
+
+        combined_loss = ((1.0 - beta) * kl_loss) + (beta * ce_loss)
 
         mask_sum = mask.sum().clamp(min=1)
-        final_loss = (cross_entropy_loss * mask).sum() / mask_sum
+        final_loss = (combined_loss * mask).sum() / mask_sum
 
     return final_loss
+
+def compute_distillation_loss(top_logprobs, student_logprobs, top_indices):
+    target_probs = torch.softmax(top_logprobs, dim=-1)
+    gathered_student_logprobs = student_logprobs.gather(dim=-1, index=top_indices)
+
+    loss = -(target_probs * gathered_student_logprobs).sum(dim=-1)
+    return loss
 
 @torch.no_grad()
 def _compute_eval_loss(student: torch.nn.Module, base_model: torch.nn.Module, eval_dataloader: DataLoader, device: torch.device) -> float:
