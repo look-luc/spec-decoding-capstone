@@ -4,7 +4,6 @@ from typing import Literal
 WANDB_PROJECT = "speculative decoding capstone"
 WANDB_ENTITY = "lecs-general"
 
-# Default dataset caps used in our experiments
 DEFAULT_MAX_BI = 7000
 DEFAULT_MAX_MONO = 20500
 
@@ -19,6 +18,9 @@ class EagleConfig:
     decoding_mode: Literal["greedy", "sample"]
     tree_choices: str|list[int] = "custom"
     num_heads: int = 4
+    num_layers: int = 2
+    score_threshold: float = 0.01
+    distillation_beta: float = 0.3
     top_k: int = 0
     top_p: float = 0.0
 
@@ -26,7 +28,7 @@ class EagleConfig:
     repetition_penalty_window: int = 16
 
     gamma: int = 5
-    track_iterations: bool = False # If true, will log per-iteration of SD
+    track_iterations: bool = False
 
     ngram_n: int = 2
 
@@ -40,13 +42,13 @@ class EagleConfig:
     device: str = "cuda"
     dataset_path: str | None = None
 
-    learning_rate:float=2e-5
-    batch_size:int = 32
-    grad_accum_steps:int = 2
-    eval_every:int = 50
+    learning_rate: float = 2e-5
+    batch_size: int = 32
+    grad_accum_steps: int = 2
+    eval_every: int = 50
     max_steps: int = 500
-    warmup_steps:int = 20
-    log_every:int = 10
+    warmup_steps: int = 20
+    log_every: int = 10
     wandb_tag: str | None = "Eagle 1 225 steps"
     output_dir: str = "checkpoints"
     wandb_project: str = WANDB_PROJECT
