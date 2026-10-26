@@ -6,10 +6,7 @@ import torch.nn as nn
 
 
 def get_stop_token_ids(tokenizer, eos_token_id=None):
-    """
-    Get all stop token IDs for chat models.
-    Supports: Qwen, Llama, Mistral, Gemma, and others.
-    """
+    """Get all stop token IDs for chat models."""
     stop_ids = set()
 
     if eos_token_id is not None:
@@ -18,14 +15,14 @@ def get_stop_token_ids(tokenizer, eos_token_id=None):
         stop_ids.add(tokenizer.eos_token_id)
 
     stop_tokens = [
-        "<|im_end|>",  # Qwen
-        "<|endoftext|>",  # Qwen, GPT
-        "<|eot_id|>",  # Llama 3
-        "<|end_of_text|>",  # Llama 3
-        "</s>",  # Mistral, Llama 2
-        "<end_of_turn>",  # Gemma
-        "<eos>",  # Gemma
-        "[/INST]",  # Mistral
+        "<|im_end|>",
+        "<|endoftext|>",
+        "<|eot_id|>",
+        "<|end_of_text|>",
+        "</s>",
+        "<end_of_turn>",
+        "<eos>",
+        "[/INST]",
     ]
 
     for token in stop_tokens:
@@ -38,16 +35,11 @@ def get_stop_token_ids(tokenizer, eos_token_id=None):
 
     return stop_ids
 
+
 def sliding_window(tokens, window):
     if window <= 0 or len(tokens) <= window:
         return tokens
     return tokens[-window:]
-
-def any_in_set(tokens, target_set):
-    for token in tokens:
-        if token in target_set:
-            return True
-    return False
 
 
 def extract_token_ids(tree_nodes, device=None):
@@ -57,8 +49,8 @@ def extract_token_ids(tree_nodes, device=None):
         if isinstance(tid, torch.Tensor):
             tid = tid.item()
         ids.append(tid)
-    # Return batched tensor [1, num_nodes] on the correct device
     return torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)
+
 
 def extract_all_leaf_paths(tree_nodes):
     leaf_paths = []
@@ -69,14 +61,12 @@ def extract_all_leaf_paths(tree_nodes):
             while curr_node is not None:
                 path.append(curr_node)
                 curr_node = curr_node.parent
-            leaf_paths.append(path)
+            leaf_paths.append(path[::-1])  # Reverse path so it flows root -> leaf
     return leaf_paths
 
+
 def crop_kv_cache(past_key_values, new_length):
-    """
-    Crop KV cache to a specific sequence length.
-    Handles both DynamicCache objects and tuple format.
-    """
+    """Crop KV cache to a specific sequence length."""
     if past_key_values is None:
         return None
 
@@ -86,11 +76,8 @@ def crop_kv_cache(past_key_values, new_length):
     else:
         new_past = []
         for layer_past in past_key_values:
-            # NGramModel-style cache: a single tensor per layer
             if isinstance(layer_past, torch.Tensor):
-                # Crop along the sequence-length dimension (assumed last)
                 new_past.append(layer_past[..., :new_length])
-            # Standard (key, value) pair cache from HF
             elif len(layer_past) == 2:
                 key_state, value_state = layer_past
                 k_cropped = key_state[..., :new_length, :]
@@ -99,20 +86,20 @@ def crop_kv_cache(past_key_values, new_length):
         return tuple(new_past)
 
 def get_kv_cache_length(past_key_values) -> int:
-    """Helper to get the current sequence length of a KV cache."""
+    """Helper to get current sequence length of KV cache."""
     if past_key_values is None:
         return 0
     if hasattr(past_key_values, "get_seq_length"):
         return past_key_values.get_seq_length()
     if isinstance(past_key_values, tuple) and len(past_key_values) > 0:
         if len(past_key_values[0][0].shape) == 4:
-            # HF cache
             return past_key_values[0][0].size(2)
         else:
             return past_key_values[0][0].size(-1)
     return 0
 
 def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
+    """Aligns KV Cache along accepted tree paths without re-running forward pass."""
     if kv_cache is None:
         return None
 
@@ -122,32 +109,23 @@ def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
     for layer_kv in kv_cache:
         if isinstance(layer_kv, torch.Tensor):
             base_state = layer_kv[..., :base_seq_len]
-            path_state = layer_kv[..., base_seq_len + accepted_idxs]
-            new_state = torch.concat(
-                [base_state, path_state],
-                dim=-1
-            )
+            path_state = layer_kv[..., [base_seq_len + i for i in accepted_idxs]]
+            new_state = torch.cat([base_state, path_state], dim=-1)
             updated_kv_cache.append(new_state)
         elif len(layer_kv) == 2:
             key_state, value_states = layer_kv
 
             base_keys = key_state[..., :base_seq_len, :]
             base_values = value_states[..., :base_seq_len, :]
-            path_keys = key_state[..., base_seq_len + accepted_idxs, :]
-            path_values = value_states[..., base_seq_len + accepted_idxs, :]
 
-            new_keys = torch.concat(
-                [base_keys, path_keys],
-                dim=-2
-            )
-            new_values = torch.concat(
-                [base_values, path_values],
-                dim=-2
-            )
+            path_indices = [base_seq_len + i for i in accepted_idxs]
+            path_keys = key_state[..., path_indices, :]
+            path_values = value_states[..., path_indices, :]
 
-            updated_kv_cache.append(
-                (new_keys, new_values)
-            )
+            new_keys = torch.cat([base_keys, path_keys], dim=-2)
+            new_values = torch.cat([base_values, path_values], dim=-2)
+
+            updated_kv_cache.append((new_keys, new_values))
     return tuple(updated_kv_cache)
 
 def get_node_depth(node):
@@ -164,13 +142,12 @@ def get_ancestor_tokens(node):
     while curr_node is not None:
         tokens.append(curr_node.token_id)
         curr_node = curr_node.parent
-    return tokens
+    return tokens[::-1]
 
 def build_eagle_tree_attn(tree_nodes, base_seq_len, device):
     num_nodes = len(tree_nodes)
     total_len = base_seq_len + num_nodes
 
-    model_dtype = torch.float32  # Will be cast externally if needed
     attn_mask = torch.full((num_nodes, total_len), -10000.0, dtype=torch.float32, device=device)
     pos_ids = torch.zeros(num_nodes, dtype=torch.long, device=device)
 
@@ -182,7 +159,6 @@ def build_eagle_tree_attn(tree_nodes, base_seq_len, device):
             depth = get_node_depth(node=node_i)
 
         pos_ids[i] = base_seq_len + depth
-
         attn_mask[i, :base_seq_len] = 0.0
 
         cur_ancestor = node_i
@@ -246,7 +222,6 @@ def eagle_draft_tree_expansion(
         next_parents = []
 
         for parent in active_parents:
-            # Collect all hidden states from root down to this parent to form a proper draft history sequence
             path_nodes = []
             curr = parent
             while curr is not None:
@@ -254,7 +229,6 @@ def eagle_draft_tree_expansion(
                 curr = curr.parent
             path_nodes.reverse()
 
-            # Build batched tensors for the path sequence [1, path_len, hidden_dim]
             path_tokens = torch.stack([node.token_id for node in path_nodes])
             if path_tokens.ndim == 1:
                 path_tokens = path_tokens.unsqueeze(0)
@@ -270,7 +244,6 @@ def eagle_draft_tree_expansion(
             seq_len = projected.size(1)
             tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=projected.device) if seq_len > 1 else None
 
-            # Run transformer decoder layer over the path sequence
             next_hidden_batched = eagle_module.decoder_layer(
                 projected,
                 projected,
@@ -278,11 +251,9 @@ def eagle_draft_tree_expansion(
                 tgt_is_causal=(seq_len > 1)
             )
 
-            # Take the hidden state of the last position in the path
             next_hidden = next_hidden_batched.squeeze(0)[-1, :]
             draft_raw_logits = eagle_module.lm_head(next_hidden)
 
-            # Build repetition penalty context from prompt + ancestor tokens
             ancestor_token_list = get_ancestor_tokens(parent)
             ancestor_tensor = torch.tensor(ancestor_token_list, dtype=generated_tokens.dtype, device=generated_tokens.device)
             full_context = torch.cat(
@@ -300,14 +271,14 @@ def eagle_draft_tree_expansion(
                 repetition_penalty
             ).squeeze(0)
 
-            draft_logorbs = filter_logprobs(
+            draft_logprobs = filter_logprobs(
                 torch.log_softmax(penalized_logits, dim=-1),
                 top_k=top_k,
                 top_p=top_p
             )
 
             top_scores, top_token_ids = top_k_sampling(
-                draft_logorbs,
+                draft_logprobs,
                 k=branch_factor
             )
 
@@ -339,7 +310,7 @@ def spec_decode_eagle(
     input_ids: torch.Tensor,
     mode: Literal["greedy", "sample"],
     max_new_tokens: int = 128,
-    tree_choices:str|list[int]=[1,4,2,3],
+    tree_choices: str | list[int] = [1, 4, 2, 3],
     top_k: int = 0,
     top_p: float = 0.0,
     repetition_penalty: float = 1.1,
@@ -348,73 +319,34 @@ def spec_decode_eagle(
     device=None,
     track_iterations: bool = False
 ):
-    """
-    Speculative Decoding with KV Caching.
-    Key features:
-
-    Args:
-        target_model: The large target model
-        draft_model: The smaller draft model
-        tokenizer: Shared tokenizer (must be same for both models)
-        input_ids: Input token IDs [1, seq_len]
-        mode: 'greedy' | 'sample'
-        max_new_tokens: Maximum new tokens to generate
-        gamma: Number of draft tokens to generate per iteration
-        top_k: If > 0, only sample from the top k tokens
-        top_p: If > 0 and < 1, keep the smallest set of tokens whose cumulative prob >= p
-        eos_token_id: End of sequence token ID
-        device: Device to run on
-
-    Returns:
-        output_ids: Generated token IDs
-        metrics: Dict with acceptance_rate, time, draft_tokens, matched_tokens, etc.
-    """
-    """
-    Speculative Decoding with KV Caching.
-    Key features:
-
-    Args:
-        target_model: The large target model
-        draft_model: The smaller draft model
-        tokenizer: Shared tokenizer (must be same for both models)
-        input_ids: Input token IDs [1, seq_len]
-        mode: 'greedy' | 'sample'
-        max_new_tokens: Maximum new tokens to generate
-        gamma: Number of draft tokens to generate per iteration
-        top_k: If > 0, only sample from the top k tokens
-        top_p: If > 0 and < 1, keep the smallest set of tokens whose cumulative prob >= p
-        eos_token_id: End of sequence token ID
-        device: Device to run on
-
-    Returns:
-        output_ids: Generated token IDs
-        metrics: Dict with acceptance_rate, time, draft_tokens, matched_tokens, etc.
-    """
     bs = input_ids.size(0)
     assert bs == 1, "Speculative decoding only supports batch_size=1"
 
     if device is None:
         device = next(target_model.parameters()).device
 
-    tree_choices_arr = []
-    if tree_choices.lower() == "eagle_1" or tree_choices.lower() == "eagle-1" or tree_choices.lower() == "eagle 1":
-        tree_choices_arr = [1,4,2,2]
-    elif tree_choices.lower() == "eagle_2" or tree_choices.lower() == "eagle-2" or tree_choices.lower() == "eagle 2":
-        tree_choices_arr = [1, 8, 4, 2]
-    elif tree_choices.lower() == "custom":
-        tree_choices_arr = [1, 4, 2, 3]
-    elif tree_choices.lower() == "conservative":
-        tree_choices_arr = [1, 3, 2, 1]
-    elif tree_choices.lower() == "balance_2" or tree_choices.lower() == "balance-2" or tree_choices.lower() == "balance 2":
-        tree_choices_arr = [1, 5, 2, 1]
-    elif tree_choices.lower() == "balance_1" or tree_choices.lower() == "balance-1" or tree_choices.lower() == "balance 1":
-        tree_choices_arr = [1, 4, 2, 1]
-    elif tree_choices.lower() in ["shallow 1", "shallow_1", "shallow-1", "shallow1"]:
-        tree_choices_arr = [1, 8, 2]
-    elif tree_choices.lower() in ["shallow 2", "shallow_2", "shallow-2", "shallow2"]:
-        tree_choices_arr = [1, 12]
+    if isinstance(tree_choices, str):
+        tc_lower = tree_choices.lower()
+        if tc_lower in ["eagle_1", "eagle-1", "eagle 1"]:
+            tree_choices_arr = [1, 4, 2, 2]
+        elif tc_lower in ["eagle_2", "eagle-2", "eagle 2"]:
+            tree_choices_arr = [1, 8, 4, 2]
+        elif tc_lower == "custom":
+            tree_choices_arr = [1, 4, 2, 3]
+        elif tc_lower == "conservative":
+            tree_choices_arr = [1, 3, 2, 1]
+        elif tc_lower in ["balance_2", "balance-2", "balance 2"]:
+            tree_choices_arr = [1, 5, 2, 1]
+        elif tc_lower in ["balance_1", "balance-1", "balance 1"]:
+            tree_choices_arr = [1, 4, 2, 1]
+        elif tc_lower in ["shallow 1", "shallow_1", "shallow-1", "shallow1"]:
+            tree_choices_arr = [1, 8, 2]
+        elif tc_lower in ["shallow 2", "shallow_2", "shallow-2", "shallow2"]:
+            tree_choices_arr = [1, 12]
+        else:
+            raise ValueError(f"{tree_choices} is not a supported tree option.")
     else:
-        raise Exception(f"{tree_choices} is not one of the options")
+        tree_choices_arr = tree_choices
 
     def apply_filters(logprobs: torch.Tensor) -> torch.Tensor:
         return filter_logprobs(logprobs, top_k=top_k, top_p=top_p)
@@ -422,38 +354,10 @@ def spec_decode_eagle(
     def select_index(logprobs: torch.Tensor):
         return sample(logprobs, mode)
 
-    def penalize_logits(
-        logits: torch.Tensor,
-        confirmed_len: int,
-        draft_so_far: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Apply windowed repetition penalty to raw logits (single position).
-
-        Builds the penalty context as:
-            last `repetition_penalty_window` tokens of
-            generated_tokens[:, :confirmed_len] ++ draft_so_far (if any)
-
-        This is called with raw logits (before log_softmax) so the
-        positive/negative sign distinction in the penalty formula is meaningful.
-
-        Args:
-            logits:       Raw model logits, shape [bs, d_vocab].
-            confirmed_len: Number of confirmed tokens in generated_tokens
-                          (i.e. cur_gen_idx at the time of the call).
-            draft_so_far: Draft tokens generated in the current iteration
-                          so far, shape [bs, n_draft]. None or empty = no drafts yet.
-        Returns:
-            Penalized logits, same shape as input.
-        """
+    def penalize_logits(logits: torch.Tensor, confirmed_len: int) -> torch.Tensor:
         if repetition_penalty == 1.0:
             return logits
-
-        ctx = generated_tokens[:, max(
-            0, cur_gen_idx - repetition_penalty_window
-        ):cur_gen_idx]
-        if draft_so_far is not None and draft_so_far.size(-1) > 0:
-            ctx = torch.cat([ctx, draft_so_far], dim=-1)
-        ctx = ctx[:, -repetition_penalty_window:]
+        ctx = generated_tokens[:, max(0, confirmed_len - repetition_penalty_window):confirmed_len]
         return apply_repetition_penalty(logits, ctx, repetition_penalty)
 
     stop_token_ids = torch.tensor(
@@ -461,7 +365,7 @@ def spec_decode_eagle(
     )
     input_ids = input_ids.to(device)
 
-    generated_tokens = torch.concat(
+    generated_tokens = torch.cat(
         [
             input_ids,
             torch.zeros(
@@ -485,7 +389,6 @@ def spec_decode_eagle(
 
     draft_times_acc = [0.0, 0.0, 0]     # [sum_ms, sum_sq_ms, count]
     verifier_times_acc = [0.0, 0.0, 0]  # [sum_ms, sum_sq_ms, count]
-    iteration_history = []
 
     def get_time():
         if device.type == "cuda":
@@ -495,7 +398,6 @@ def spec_decode_eagle(
     with torch.no_grad():
         start_time = get_time()
 
-        # Preload kv cache for prompts
         target_out = target_model(input_ids, use_cache=True, output_hidden_states=True)
         target_kv_cache = target_out.past_key_values
 
@@ -509,8 +411,7 @@ def spec_decode_eagle(
 
         while cur_gen_idx < generated_tokens.size(-1):
             num_iterations += 1
-            base_seq_len = cur_gen_idx
-            curr_token = generated_tokens[:, cur_gen_idx]
+            curr_token = generated_tokens[:, cur_gen_idx - 1]
 
             t_d0 = get_time()
             tree_nodes = eagle_draft_tree_expansion(
@@ -550,6 +451,7 @@ def spec_decode_eagle(
             tree_pos_ids = tree_pos_ids_list.detach().clone().to(dtype=torch.long, device=device)
             tree_attn_mask = tree_attn_mask_list.detach().clone().to(dtype=model_dtype, device=device)
 
+            t_v0 = get_time()
             target_out = target_model(
                 input_ids=flattened_tokens,
                 attention_mask=tree_attn_mask,
@@ -558,6 +460,12 @@ def spec_decode_eagle(
                 use_cache=True,
                 output_hidden_states=True
             )
+            t_v1 = get_time()
+
+            v_ms = (t_v1 - t_v0) * 1000.0
+            verifier_times_acc[0] += v_ms
+            verifier_times_acc[1] += v_ms ** 2
+            verifier_times_acc[2] += 1
 
             target_raw_logits = target_out.logits
             verifier_hiddens = target_out.hidden_states[-1]
@@ -573,10 +481,7 @@ def spec_decode_eagle(
                 window=repetition_penalty_window
             )
             target_logprobs = filter_logprobs(
-                torch.log_softmax(
-                    penalize_target_logits,
-                    dim=-1
-                ),
+                torch.log_softmax(penalize_target_logits, dim=-1),
                 top_k=top_k,
                 top_p=top_p
             )
@@ -589,9 +494,9 @@ def spec_decode_eagle(
 
             for path in candidate_paths:
                 accepted_in_paths = []
-                for step in range(len(path)-1):
+                for step in range(len(path) - 1):
                     parent_node = path[step]
-                    child_node = path[step+1]
+                    child_node = path[step + 1]
 
                     pred_token = select_index(target_logprobs[:, parent_node.index, :])
 
@@ -599,24 +504,20 @@ def spec_decode_eagle(
                         accepted_in_paths.append(child_node)
                     else:
                         break
+
                 if len(accepted_in_paths) > best_accept_count:
                     best_accept_count = len(accepted_in_paths)
                     best_path = accepted_in_paths
 
                     last_accepted_node = accepted_in_paths[-1] if len(accepted_in_paths) else path[0]
-                    bonus_token = sample(
-                        target_logprobs[:, last_accepted_node.index, :],
-                        mode
-                    )
+                    bonus_token = select_index(target_logprobs[:, last_accepted_node.index, :])
                     new_last_hidden = verifier_hiddens[:, last_accepted_node.index, :]
-            # Record accepted position statistics
+
             for node in best_path:
                 if 1 <= node.depth <= max_depth:
                     per_position_accept_count[node.depth - 1] += 1
 
-            accepted_tokens = [
-                node.token_id for node in best_path
-            ]
+            accepted_tokens = [node.token_id for node in best_path]
             accepted_tensor = torch.tensor(accepted_tokens, dtype=torch.int64, device=device).view(-1)
             bonus_tensor = bonus_token.view(-1)
 
@@ -625,7 +526,6 @@ def spec_decode_eagle(
 
             new_gen_idx = cur_gen_idx + num_added
 
-            # Dynamically expand generated_tokens if capacity is exceeded
             if new_gen_idx > generated_tokens.size(-1):
                 padding = torch.zeros(
                     (generated_tokens.size(0), new_gen_idx - generated_tokens.size(-1)),
@@ -633,28 +533,21 @@ def spec_decode_eagle(
                     device=device
                 )
                 generated_tokens = torch.cat([generated_tokens, padding], dim=-1)
+
             generated_tokens[:, cur_gen_idx:new_gen_idx] = tokens_to_add
             cur_gen_idx = new_gen_idx
 
-            total_matched_tokens = total_matched_tokens + best_accept_count
-            total_draft_tokens = total_draft_tokens + len(tree_nodes) - 1
+            total_matched_tokens += best_accept_count
+            total_draft_tokens += len(tree_nodes) - 1
 
-            if len(best_path) > 0:
-                last_accepted_node = best_path[-1]
-                last_hidden = verifier_hiddens[:, last_accepted_node.index, :]
-            else:
-                last_hidden = tree_nodes[0].hidden_state
-
-            base_kv_cache = crop_kv_cache(target_out.past_key_values, base_seq_len)
-            final_target_out = target_model(
-                input_ids=tokens_to_add,
-                past_key_values=base_kv_cache,
-                use_cache=True,
-                output_hidden_states=True
+            # ---------------- KV CACHE & STATE ALIGNMENT ----------------
+            # Crop and update KV cache directly based on accepted tree nodes
+            target_kv_cache = crop_align_eagle_kv_cache(
+                target_out.past_key_values,
+                best_path,
+                base_seq_len
             )
-
-            target_kv_cache = final_target_out.past_key_values
-            last_hidden = final_target_out.hidden_states[-1][:, -1, :]
+            last_hidden = new_last_hidden
 
             if torch.isin(tokens_to_add, stop_token_ids).any():
                 generated_tokens = generated_tokens[:, :cur_gen_idx]
@@ -684,26 +577,20 @@ def spec_decode_eagle(
     if draft_times_acc[2] > 0 and verifier_times_acc[2] > 0:
         d_sum, d_sum_sq, d_n = draft_times_acc
         v_sum, v_sum_sq, v_n = verifier_times_acc
-        average_draft_time = d_sum / d_n          # ms
-        average_verifier_time = v_sum / v_n        # ms
-        metrics["average_draft_time"] = average_draft_time / 1000  # seconds
-        metrics["average_verifier_time"] = average_verifier_time / 1000
+        average_draft_time = d_sum / d_n
+        average_verifier_time = v_sum / v_n
+        metrics["average_draft_time"] = average_draft_time / 1000.0
+        metrics["average_verifier_time"] = average_verifier_time / 1000.0
         raw_draft_variance = d_sum_sq / d_n - average_draft_time**2
         raw_verifier_variance = v_sum_sq / v_n - average_verifier_time**2
-        metrics["draft_time_variance"] = max(raw_draft_variance, 0.0) / 1e6  # s^2
-        metrics["verifier_time_variance"] = max(raw_verifier_variance, 0.0) / 1e6  # s^2
+        metrics["draft_time_variance"] = max(raw_draft_variance, 0.0) / 1e6
+        metrics["verifier_time_variance"] = max(raw_verifier_variance, 0.0) / 1e6
         metrics["draft_time_count"] = d_n
         metrics["verifier_time_count"] = v_n
 
-    if track_iterations:
-        metrics["iteration_history"] = iteration_history
-
     return generated_tokens, metrics
 
-def filter_logprobs(
-    logprobs: torch.Tensor, top_k: int = 0, top_p: float = 0.0
-) -> torch.Tensor:
-    """Apply top-k and/or top-p filtering, then renormalize to valid log-probs."""
+def filter_logprobs(logprobs: torch.Tensor, top_k: int = 0, top_p: float = 0.0) -> torch.Tensor:
     filtered = logprobs
     if top_k > 0:
         filtered = apply_top_k(filtered, k=top_k)
@@ -715,39 +602,33 @@ def filter_logprobs(
 
 
 def sample(logprobs: torch.Tensor, mode: Literal["greedy", "sample"]):
-    """Sample a token index from (already filtered) log-probs."""
     if mode == "greedy":
         return logprobs.argmax(dim=-1)
     return torch.distributions.Categorical(logits=logprobs).sample()
 
 def apply_top_k(logits: torch.Tensor, k: int) -> torch.Tensor:
-    """Filters logits to only keep the top k values."""
     if k < 1:
         raise ValueError(f"top_k must be >= 1, got {k}")
-
     if k >= logits.size(-1):
         return logits
 
     top_values, _ = torch.topk(logits, k, dim=-1)
     kth_value = top_values[..., -1, None]
     indices_to_remove = logits < kth_value
-    logits_filtered = logits.masked_fill(indices_to_remove, float("-inf"))
+    return logits.masked_fill(indices_to_remove, float("-inf"))
 
-    return logits_filtered
 
-def top_k_sampling(logprods, k):
-    if logprods.ndim > 1:
-        logprods = logprods.squeeze(0)
-    sorted_logprobs, sorted_idxs = torch.sort(logprods, descending=True, dim=-1)
+def top_k_sampling(logprobs, k):
+    if logprobs.ndim > 1:
+        logprobs = logprobs.squeeze(0)
+    sorted_logprobs, sorted_idxs = torch.sort(logprobs, descending=True, dim=-1)
     top_scores = sorted_logprobs[:k]
     top_token_ids = sorted_idxs[:k]
     return top_scores, top_token_ids
 
 def apply_top_p(logits: torch.Tensor, p: float) -> torch.Tensor:
-    """Filters logits to keep the smallest set of top tokens whose cumulative prob >= p."""
     if p < 0.0 or p > 1.0:
         raise ValueError(f"top_p must be between 0.0 and 1.0, got {p}")
-
     if p >= 1.0:
         return logits
 
@@ -755,39 +636,29 @@ def apply_top_p(logits: torch.Tensor, p: float) -> torch.Tensor:
     cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
     sorted_indices_to_remove = cumulative_probs > p
 
-    # to keep the borderline token
     sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
     sorted_indices_to_remove[..., 0] = False
 
     indices_to_remove = sorted_indices_to_remove.scatter(
         dim=-1, index=sorted_indices, src=sorted_indices_to_remove
     )
+    return logits.masked_fill(indices_to_remove, float("-inf"))
 
-    logits_filtered = logits.masked_fill(indices_to_remove, float("-inf"))
-
-    return logits_filtered
-
-def apply_repetition_penalty(
-    logits: torch.Tensor,
-    context_ids: torch.Tensor,
-    penalty: float,
-) -> torch.Tensor:
-    """Apply multiplicative repetition penalty to raw logits (single position)."""
+def apply_repetition_penalty(logits: torch.Tensor, context_ids: torch.Tensor, penalty: float) -> torch.Tensor:
     if penalty == 1.0 or context_ids.size(-1) == 0:
         return logits
 
     for b in range(logits.size(0)):
-        # window_counts = torch.nn.functional.one_hot(context_ids[b]).sum(dim=-2)
         max_vocab_index = torch.max(context_ids[b]).item() + 1
         max_vocab_index = cast(int, max_vocab_index)
         window_counts = torch.zeros(max_vocab_index, dtype=torch.long, device=context_ids[b].device)
         window_counts.scatter_add_(dim=0, index=context_ids[b], src=torch.ones_like(context_ids[b]))
 
         per_token_penalty = penalty ** window_counts
-        logits[b,:max_vocab_index] = torch.where(
-            logits[b,:max_vocab_index] > 0,
-            logits[b,:max_vocab_index] / per_token_penalty,
-            logits[b,:max_vocab_index] * per_token_penalty,
+        logits[b, :max_vocab_index] = torch.where(
+            logits[b, :max_vocab_index] > 0,
+            logits[b, :max_vocab_index] / per_token_penalty,
+            logits[b, :max_vocab_index] * per_token_penalty,
         )
     return logits
 
@@ -798,10 +669,6 @@ def apply_repetition_penalty_batched(
     penalty: float,
     window: int,
 ) -> torch.Tensor:
-    """Vectorized repetition penalty for all verification positions at once.
-
-    Position j's context = generated_tokens[j-window:j]
-    """
     if penalty == 1.0:
         return logits
 
@@ -809,31 +676,27 @@ def apply_repetition_penalty_batched(
     device = generated_tokens.device
 
     for b in range(bs):
-        # Only positions before the current pos
         mask = ~torch.triu(torch.ones(seq_len + 1, seq_len, dtype=torch.bool, device=device))
-
-        # Only positions after the start of the window
         window_start = torch.clamp(torch.arange(seq_len + 1, device=device) - window, 0).unsqueeze(-1)
         start_mask = torch.arange(seq_len, device=device) >= window_start
         mask *= start_mask
 
-        # Replace masked positions with an unused index (hack to avoid using 0)
         unused_idx = torch.max(generated_tokens).item() + 1
         unused_idx = cast(int, unused_idx)
         window_tokens = generated_tokens[b].expand(seq_len + 1, seq_len).masked_fill(~mask, unused_idx)
 
         window_counts = torch.zeros(window_tokens.size(0), unused_idx + 1, dtype=torch.long, device=window_tokens.device)
         window_counts.scatter_add_(dim=1, index=window_tokens, src=torch.ones_like(window_tokens))
-        window_counts  = window_counts[...,:-1] # cut off the unused vocab item
+        window_counts = window_counts[..., :-1]
 
         per_token_penalty = penalty ** window_counts
         num_verify_tokens = logits.size(1)
         per_token_penalty = per_token_penalty[confirmed_len : confirmed_len + num_verify_tokens]
 
-        logits[b,:,:unused_idx] = torch.where(
-            logits[b,:,:unused_idx] > 0,
-            logits[b,:,:unused_idx] / per_token_penalty,
-            logits[b,:,:unused_idx] * per_token_penalty,
+        logits[b, :, :unused_idx] = torch.where(
+            logits[b, :, :unused_idx] > 0,
+            logits[b, :, :unused_idx] / per_token_penalty,
+            logits[b, :, :unused_idx] * per_token_penalty,
         )
 
     return logits
