@@ -1,3 +1,4 @@
+import math
 import time
 from typing import Literal, cast
 
@@ -216,21 +217,21 @@ def build_eagle_tree_attn(tree_nodes, base_seq_len, device):
 
 
 class Node:
-    def __init__(self, index, parent, token_id, hidden_state, depth, score):
+    def __init__(self, index, parent, token_id, hidden_state, depth, log_score):
         self.index = index
         self.parent = parent
         self.token_id = token_id
         self.hidden_state = hidden_state
         self.depth = depth
-        self.score = score
+        self.log_score = log_score
         self.children = []
 
         if parent is not None:
             parent.children.append(self)
 
 
-def create_node(index, parent, token_id, hidden_state, depth, score):
-    return Node(index, parent, token_id, hidden_state, depth, score)
+def create_node(index, parent, token_id, hidden_state, depth, log_score):
+    return Node(index, parent, token_id, hidden_state, depth, log_score)
 
 
 def eagle_draft_tree_expansion(
@@ -248,6 +249,7 @@ def eagle_draft_tree_expansion(
     score_threshold: float = 0.01
 ):
     tree_nodes = []
+    log_threshold = math.log(max(score_threshold, 1e-12))
 
     if root_hidden.ndim > 1:
         root_hidden = root_hidden.squeeze(0)
@@ -260,7 +262,7 @@ def eagle_draft_tree_expansion(
         token_id=root_token_id,
         hidden_state=root_hidden,
         depth=0,
-        score=1.0
+        log_score=0.0
     )
 
     tree_nodes.append(root_node)
@@ -328,17 +330,18 @@ def eagle_draft_tree_expansion(
             top_scores, top_token_ids = top_k_sampling(draft_logprobs, k=branch_factor)
 
             for k_idx in range(branch_factor):
-                child_score = parent.score * torch.exp(top_scores[k_idx])
+                # Accumulate log probabilities instead of multiplying raw probabilities
+                child_log_score = parent.log_score + top_scores[k_idx].item()
 
-                # Dynamic tree pruning: drop branches falling below score threshold
-                if child_score >= score_threshold:
+                # Dynamic log-space pruning
+                if child_log_score >= log_threshold:
                     child_node = create_node(
                         index=len(tree_nodes),
                         parent=parent,
                         token_id=top_token_ids[k_idx],
                         hidden_state=next_hidden,
                         depth=depth + 1,
-                        score=child_score
+                        log_score=child_log_score
                     )
                     tree_nodes.append(child_node)
                     next_parents.append(child_node)
