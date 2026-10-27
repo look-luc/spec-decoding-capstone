@@ -5,7 +5,6 @@ import time
 from dataclasses import asdict
 from typing import Any
 
-import datasets
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -25,7 +24,8 @@ def compute_eagle_loss(
     batch: dict,
     device: torch.device = None,
     top_k: int = 30,
-    beta: float = 0.5
+    beta: float = 0.5,
+    num_rollout_steps: int = 2
 ) -> torch.Tensor:
     if device is None:
         device = next(base_model.parameters()).device
@@ -45,43 +45,57 @@ def compute_eagle_loss(
             base_logits = base_outputs.logits
 
             greedy_targets = torch.argmax(base_logits, dim=-1)
-
             target_log_softmax = torch.nn.functional.log_softmax(base_logits.float(), dim=-1)
             target_logprobs, target_indices = torch.topk(target_log_softmax, k=top_k, dim=-1)
 
-        draft_tokens = input_ids[:, :-1]
-        draft_logits = base_hidden_states[:, :-1, :]
+        total_loss = 0.0
 
-        pred_hidden, pred_logits = eagle_module(
-            token_id=draft_tokens,
-            hidden_state=draft_logits,
-        )
+        # Initial inputs for rollout
+        current_tokens = input_ids[:, :-num_rollout_steps]
+        current_hiddens = base_hidden_states[:, :-num_rollout_steps, :]
 
-        shifted_target_logprobs = target_logprobs[:, 1:, :]
-        matched_target_indices = target_indices[:, 1:, :]
-        shifted_greedy_targets = greedy_targets[:, 1:]
-        mask = label_mask
+        for step_idx in range(num_rollout_steps):
+            target_idx_offset = step_idx + 1
 
-        target_probs = torch.softmax(shifted_target_logprobs, dim=-1)
-        student_logprobs = torch.nn.functional.log_softmax(pred_logits.float(), dim=-1)
+            # Forward pass through draft module
+            pred_hidden, pred_logits = eagle_module(
+                token_id=current_tokens,
+                hidden_state=current_hiddens,
+            )
 
-        gathered_student_logprobs = student_logprobs.gather(
-            dim=-1, index=matched_target_indices
-        )
-        kl_loss = -(target_probs * gathered_student_logprobs).sum(dim=-1)
+            # Align slices with target outputs
+            seq_len = pred_logits.size(1)
+            shifted_target_logprobs = target_logprobs[:, target_idx_offset : target_idx_offset + seq_len, :]
+            matched_target_indices = target_indices[:, target_idx_offset : target_idx_offset + seq_len, :]
+            shifted_greedy_targets = greedy_targets[:, target_idx_offset : target_idx_offset + seq_len]
+            step_mask = label_mask[:, :seq_len]
 
-        ce_loss = torch.nn.functional.cross_entropy(
-            pred_logits.reshape(-1, pred_logits.size(-1)),
-            shifted_greedy_targets.reshape(-1),
-            reduction="none"
-        ).reshape(shifted_greedy_targets.shape)
+            # Distillation & Cross-Entropy Losses
+            target_probs = torch.softmax(shifted_target_logprobs, dim=-1)
+            student_logprobs = torch.nn.functional.log_softmax(pred_logits.float(), dim=-1)
 
-        combined_loss = ((1.0 - beta) * kl_loss) + (beta * ce_loss)
+            gathered_student_logprobs = student_logprobs.gather(dim=-1, index=matched_target_indices)
+            kl_loss = -(target_probs * gathered_student_logprobs).sum(dim=-1)
 
-        mask_sum = mask.sum().clamp(min=1)
-        final_loss = (combined_loss * mask).sum() / mask_sum
+            ce_loss = torch.nn.functional.cross_entropy(
+                pred_logits.reshape(-1, pred_logits.size(-1)),
+                shifted_greedy_targets.reshape(-1),
+                reduction="none"
+            ).reshape(shifted_greedy_targets.shape)
 
-    return final_loss
+            combined_loss = ((1.0 - beta) * kl_loss) + (beta * ce_loss)
+            mask_sum = step_mask.sum().clamp(min=1)
+            step_loss = (combined_loss * step_mask).sum() / mask_sum
+
+            total_loss += step_loss / num_rollout_steps
+
+            # Autoregressive step for next rollout iteration (feeding draft's own predictions)
+            if step_idx < num_rollout_steps - 1:
+                next_tokens = torch.argmax(pred_logits, dim=-1)
+                current_tokens = next_tokens
+                current_hiddens = pred_hidden.detach()  # Detach hidden states to stabilize multi-step gradients
+
+    return total_loss
 
 def compute_distillation_loss(top_logprobs, student_logprobs, top_indices):
     target_probs = torch.softmax(top_logprobs, dim=-1)
@@ -310,6 +324,78 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
                 })
 
     save_eagle_checkpoint(eagle_module, config.output_dir, label="final")
+    print("Running post-training correctness audit...")
+    eagle_module.eval()
+    audit_speculative_correctness(
+        target_model=base_model,
+        eagle_module=eagle_module,
+        tokenizer=tokenizer,
+        eval_dataloader=eval_dataloader,
+        device=device,
+        max_samples=20
+    )
+
+def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_dataloader, device="cuda", max_samples=20):
+    target_model.eval()
+    eagle_module.eval()
+
+    total_samples = 0
+    exact_matches = 0
+
+    print("Starting speculative decoding correctness audit...")
+    with torch.no_grad():
+        for batch in eval_dataloader:
+            if batch is None:
+                continue
+            input_ids = batch["input_ids"][:, :5].to(device)  # Use prompt prefix
+
+            for i in range(input_ids.size(0)):
+                if total_samples >= max_samples:
+                    break
+
+                prompt = input_ids[i:i+1]
+
+                # 1. Target-only greedy baseline generation
+                target_out = target_model.generate(
+                    prompt,
+                    max_new_tokens=64,
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id
+                )
+
+                # 2. Speculative decoding generation
+                spec_out, _ = spec_decode_eagle(
+                    target_model=target_model,
+                    eagle_module=eagle_module,
+                    tokenizer=tokenizer,
+                    input_ids=prompt,
+                    mode="greedy",
+                    max_new_tokens=64,
+                    tree_choices="balance_1",
+                    device=device
+                )
+
+                # Robustly align lengths to avoid size mismatch errors during EOS differences
+                min_len = min(target_out.size(1), spec_out.size(1))
+                target_trimmed = target_out[:, :min_len]
+                spec_trimmed = spec_out[:, :min_len]
+
+                match = torch.equal(target_trimmed, spec_trimmed)
+                if match:
+                    exact_matches += 1
+                else:
+                    print(f"\n[Mismatch] Sample {total_samples}")
+                    print(f"Target text: {tokenizer.decode(target_out[0], skip_special_tokens=True)}")
+                    print(f"Spec text:   {tokenizer.decode(spec_out[0], skip_special_tokens=True)}")
+
+                total_samples += 1
+            if total_samples >= max_samples:
+                break
+
+    agreement_rate = exact_matches / total_samples if total_samples > 0 else 0.0
+    print(f"\nCorrectness Audit Result: {exact_matches}/{total_samples} exact matches ({agreement_rate * 100:.1f}%)")
+    return agreement_rate
 
 def _restore_training_state(config: Any, optimizer: optim.Optimizer, scheduler: LambdaLR, device: torch.device) -> int:
     start_step = 0
