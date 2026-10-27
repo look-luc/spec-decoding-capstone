@@ -14,6 +14,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from src.data.dataset import assemble_dataset
+from src.spec_decode_eagle import spec_decode_eagle
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ def compute_eagle_loss(
     device: torch.device = None,
     top_k: int = 30,
     beta: float = 0.5,
-    num_rollout_steps: int = 2
+    num_rollout_steps: int = 1
 ) -> torch.Tensor:
     if device is None:
         device = next(base_model.parameters()).device
