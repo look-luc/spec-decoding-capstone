@@ -306,7 +306,7 @@ def eagle_draft_tree_expansion(
                 hidden,
                 hidden,
                 tgt_mask=tgt_mask,
-                tgt_is_csal=(seq_len > 1)
+                tgt_is_causal=(seq_len > 1)
             )
 
         next_hiddens = hidden[:, -1, :]  # Shape: (num_parents, hidden_dim)
