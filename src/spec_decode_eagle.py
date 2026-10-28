@@ -246,7 +246,7 @@ def eagle_draft_tree_expansion(
     generated_tokens,
     cur_gen_idx,
     mode,
-    score_threshold: float = 0.02
+    score_threshold: float = 0.005
 ):
     tree_nodes = []
     log_threshold = math.log(max(score_threshold, 1e-12))
@@ -306,7 +306,7 @@ def eagle_draft_tree_expansion(
                 hidden,
                 hidden,
                 tgt_mask=tgt_mask,
-                tgt_is_causal=(seq_len > 1)
+                tgt_is_csal=(seq_len > 1)
             )
 
         next_hiddens = hidden[:, -1, :]  # Shape: (num_parents, hidden_dim)
