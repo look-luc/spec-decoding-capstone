@@ -246,10 +246,11 @@ def eagle_draft_tree_expansion(
     generated_tokens,
     cur_gen_idx,
     mode,
-    score_threshold: float = 0.01
+    score_threshold: float = 0.02
 ):
     tree_nodes = []
     log_threshold = math.log(max(score_threshold, 1e-12))
+    device = root_hidden.device
 
     if root_hidden.ndim > 1:
         root_hidden = root_hidden.squeeze(0)
@@ -270,7 +271,11 @@ def eagle_draft_tree_expansion(
 
     for depth in range(len(tree_choice)):
         branch_factor = tree_choice[depth]
-        next_parents = []
+        if len(active_parents) == 0:
+            break
+
+        batch_path_tokens = []
+        batch_path_hiddens = []
 
         for parent in active_parents:
             path_nodes = []
@@ -280,66 +285,69 @@ def eagle_draft_tree_expansion(
                 curr = curr.parent
             path_nodes.reverse()
 
-            path_tokens = torch.stack([node.token_id for node in path_nodes])
-            if path_tokens.ndim == 1:
-                path_tokens = path_tokens.unsqueeze(0)
+            p_tokens = torch.stack([node.token_id for node in path_nodes]).view(-1)
+            p_hiddens = torch.stack([node.hidden_state for node in path_nodes])
+            batch_path_tokens.append(p_tokens)
+            batch_path_hiddens.append(p_hiddens)
 
-            path_hiddens = torch.stack([node.hidden_state for node in path_nodes])
-            if path_hiddens.ndim == 2:
-                path_hiddens = path_hiddens.unsqueeze(0)
+        path_tokens_tensor = torch.stack(batch_path_tokens, dim=0).to(device)
+        path_hiddens_tensor = torch.stack(batch_path_hiddens, dim=0).to(device)
 
-            token_embs = eagle_module.get_embedding(path_tokens)
-            fused_feat = torch.cat([token_embs, path_hiddens], dim=-1)
-            projected = eagle_module.fc_fusion(fused_feat)
+        token_embs = eagle_module.get_embedding(path_tokens_tensor)
+        fused_feat = torch.cat([token_embs, path_hiddens_tensor], dim=-1)
+        projected = eagle_module.fc_fusion(fused_feat)
 
-            seq_len = projected.size(1)
-            tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=projected.device) if seq_len > 1 else None
+        seq_len = projected.size(1)
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=device) if seq_len > 1 else None
 
-            hidden = projected
-            for layer in eagle_module.decoder_layers:
-                hidden = layer(
-                    hidden,
-                    hidden,
-                    tgt_mask=tgt_mask,
-                    tgt_is_causal=(seq_len > 1)
-                )
-
-            next_hidden = hidden.squeeze(0)[-1, :]
-            draft_raw_logits = eagle_module.lm_head(next_hidden)
-
-            ancestor_token_list = get_ancestor_tokens(parent)
-            ancestor_tensor = torch.tensor(ancestor_token_list, dtype=generated_tokens.dtype, device=generated_tokens.device)
-            full_context = torch.cat(
-                [generated_tokens[0, :cur_gen_idx], ancestor_tensor],
-                dim=-1
+        hidden = projected
+        for layer in eagle_module.decoder_layers:
+            hidden = layer(
+                hidden,
+                hidden,
+                tgt_mask=tgt_mask,
+                tgt_is_causal=(seq_len > 1)
             )
-            penalty_context = sliding_window(full_context, window=repetition_penalty_window)
 
-            penalized_logits = apply_repetition_penalty(
-                draft_raw_logits.unsqueeze(0),
-                penalty_context,
-                repetition_penalty
-            ).squeeze(0)
+        next_hiddens = hidden[:, -1, :]  # Shape: (num_parents, hidden_dim)
+        draft_raw_logits = eagle_module.lm_head(next_hiddens)  # Shape: (num_parents, vocab_size)
 
-            draft_logprobs = filter_logprobs(
-                torch.log_softmax(penalized_logits, dim=-1),
+        processed_logprobs_list = []
+        for i, parent in enumerate(active_parents):
+            logits_i = draft_raw_logits[i : i + 1]  # (1, vocab_size)
+
+            if repetition_penalty != 1.0:
+                ancestor_token_list = get_ancestor_tokens(parent)
+                ancestor_tensor = torch.tensor(ancestor_token_list, dtype=generated_tokens.dtype, device=device)
+                full_context = torch.cat(
+                    [generated_tokens[0, :cur_gen_idx], ancestor_tensor],
+                    dim=-1
+                )
+                penalty_context = sliding_window(full_context, window=repetition_penalty_window)
+                logits_i = apply_repetition_penalty(logits_i, penalty_context, repetition_penalty)
+
+            logprobs_i = filter_logprobs(
+                torch.log_softmax(logits_i, dim=-1),
                 top_k=top_k,
                 top_p=top_p
             )
+            processed_logprobs_list.append(logprobs_i.squeeze(0))
 
-            top_scores, top_token_ids = top_k_sampling(draft_logprobs, k=branch_factor)
+        processed_logprobs = torch.stack(processed_logprobs_list, dim=0)
 
+        top_scores, top_token_ids = torch.topk(processed_logprobs, k=branch_factor, dim=-1)
+
+        next_parents = []
+        for i, parent in enumerate(active_parents):
             for k_idx in range(branch_factor):
-                # Accumulate log probabilities instead of multiplying raw probabilities
-                child_log_score = parent.log_score + top_scores[k_idx].item()
+                child_log_score = parent.log_score + top_scores[i, k_idx].item()
 
-                # Dynamic log-space pruning
                 if child_log_score >= log_threshold:
                     child_node = create_node(
                         index=len(tree_nodes),
                         parent=parent,
-                        token_id=top_token_ids[k_idx],
-                        hidden_state=next_hidden,
+                        token_id=top_token_ids[i, k_idx],
+                        hidden_state=next_hiddens[i],
                         depth=depth + 1,
                         log_score=child_log_score
                     )
@@ -347,8 +355,6 @@ def eagle_draft_tree_expansion(
                     next_parents.append(child_node)
 
         active_parents = next_parents
-        if len(active_parents) == 0:
-            break
 
     return tree_nodes
 
@@ -363,7 +369,7 @@ def spec_decode_eagle(
     tree_choices: str | list[int] = [1, 4, 2, 3],
     top_k: int = 0,
     top_p: float = 0.0,
-    repetition_penalty: float = 1.1,
+    repetition_penalty: float = 1.0,
     repetition_penalty_window: int = 16,
     score_threshold: float = 0.01,
     eos_token_id: int | None = None,

@@ -24,9 +24,9 @@ def compute_eagle_loss(
     base_model: nn.Module,
     batch: dict,
     device: torch.device = None,
-    top_k: int = 30,
-    beta: float = 0.5,
-    num_rollout_steps: int = 1
+    top_k: int = 40,
+    beta: float = 0.3,          # Lower beta to lean more into soft KL distillation
+    temperature: float = 2.0    # Softens the target distribution
 ) -> torch.Tensor:
     if device is None:
         device = next(base_model.parameters()).device
@@ -46,57 +46,43 @@ def compute_eagle_loss(
             base_logits = base_outputs.logits
 
             greedy_targets = torch.argmax(base_logits, dim=-1)
-            target_log_softmax = torch.nn.functional.log_softmax(base_logits.float(), dim=-1)
+
+            # Apply temperature scaling to target logits
+            scaled_base_logits = base_logits.float() / temperature
+            target_log_softmax = torch.nn.functional.log_softmax(scaled_base_logits, dim=-1)
             target_logprobs, target_indices = torch.topk(target_log_softmax, k=top_k, dim=-1)
 
-        total_loss = 0.0
+        pred_hidden, pred_logits = eagle_module(
+            token_id=input_ids[:, :-1],
+            hidden_state=base_hidden_states[:, :-1, :],
+        )
 
-        # Initial inputs for rollout
-        current_tokens = input_ids[:, :-num_rollout_steps]
-        current_hiddens = base_hidden_states[:, :-num_rollout_steps, :]
+        seq_len = pred_logits.size(1)
+        shifted_target_logprobs = target_logprobs[:, 1 : 1 + seq_len, :]
+        matched_target_indices = target_indices[:, 1 : 1 + seq_len, :]
+        shifted_greedy_targets = greedy_targets[:, 1 : 1 + seq_len]
+        step_mask = label_mask[:, :seq_len]
 
-        for step_idx in range(num_rollout_steps):
-            target_idx_offset = step_idx + 1
+        # Apply temperature scaling to student logits
+        scaled_pred_logits = pred_logits.float() / temperature
+        target_probs = torch.softmax(shifted_target_logprobs, dim=-1)
+        student_logprobs = torch.nn.functional.log_softmax(scaled_pred_logits, dim=-1)
 
-            # Forward pass through draft module
-            pred_hidden, pred_logits = eagle_module(
-                token_id=current_tokens,
-                hidden_state=current_hiddens,
-            )
+        gathered_student_logprobs = student_logprobs.gather(dim=-1, index=matched_target_indices)
+        # Scale KL loss by T^2 to maintain gradient magnitude
+        kl_loss = -(target_probs * gathered_student_logprobs).sum(dim=-1) * (temperature ** 2)
 
-            # Align slices with target outputs
-            seq_len = pred_logits.size(1)
-            shifted_target_logprobs = target_logprobs[:, target_idx_offset : target_idx_offset + seq_len, :]
-            matched_target_indices = target_indices[:, target_idx_offset : target_idx_offset + seq_len, :]
-            shifted_greedy_targets = greedy_targets[:, target_idx_offset : target_idx_offset + seq_len]
-            step_mask = label_mask[:, :seq_len]
+        ce_loss = torch.nn.functional.cross_entropy(
+            pred_logits.reshape(-1, pred_logits.size(-1)),
+            shifted_greedy_targets.reshape(-1),
+            reduction="none"
+        ).reshape(shifted_greedy_targets.shape)
 
-            # Distillation & Cross-Entropy Losses
-            target_probs = torch.softmax(shifted_target_logprobs, dim=-1)
-            student_logprobs = torch.nn.functional.log_softmax(pred_logits.float(), dim=-1)
+        combined_loss = ((1.0 - beta) * kl_loss) + (beta * ce_loss)
+        mask_sum = step_mask.sum().clamp(min=1)
+        loss = (combined_loss * step_mask).sum() / mask_sum
 
-            gathered_student_logprobs = student_logprobs.gather(dim=-1, index=matched_target_indices)
-            kl_loss = -(target_probs * gathered_student_logprobs).sum(dim=-1)
-
-            ce_loss = torch.nn.functional.cross_entropy(
-                pred_logits.reshape(-1, pred_logits.size(-1)),
-                shifted_greedy_targets.reshape(-1),
-                reduction="none"
-            ).reshape(shifted_greedy_targets.shape)
-
-            combined_loss = ((1.0 - beta) * kl_loss) + (beta * ce_loss)
-            mask_sum = step_mask.sum().clamp(min=1)
-            step_loss = (combined_loss * step_mask).sum() / mask_sum
-
-            total_loss += step_loss / num_rollout_steps
-
-            # Autoregressive step for next rollout iteration (feeding draft's own predictions)
-            if step_idx < num_rollout_steps - 1:
-                next_tokens = torch.argmax(pred_logits, dim=-1)
-                current_tokens = next_tokens
-                current_hiddens = pred_hidden.detach()  # Detach hidden states to stabilize multi-step gradients
-
-    return total_loss
+    return loss
 
 def compute_distillation_loss(top_logprobs, student_logprobs, top_indices):
     target_probs = torch.softmax(top_logprobs, dim=-1)
@@ -303,10 +289,7 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
                 wandb.log({"eval/loss": eval_loss, "step": global_step})
                 if eval_loss < best_eval_loss:
                     best_eval_loss = eval_loss
-                    _save_checkpoint(
-                        eagle_module, tokenizer, optimizer, config.output_dir, "best", repo_name,
-                        push_to_hub=False, scheduler=scheduler,
-                    )
+                    save_eagle_checkpoint(eagle_module, config.output_dir, label="best")
             # Log to Wandb
             if global_step % log_every == 0:
                 avg_loss = log_accum_loss / log_micro_count
@@ -326,7 +309,11 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
 
     save_eagle_checkpoint(eagle_module, config.output_dir, label="final")
     print("Running post-training correctness audit...")
+
+    best_checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+    eagle_module.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
     eagle_module.eval()
+
     audit_speculative_correctness(
         target_model=base_model,
         eagle_module=eagle_module,
@@ -336,7 +323,7 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
         max_samples=20
     )
 
-def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_dataloader, device="cuda", max_samples=20):
+def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_dataloader, device="cuda", max_samples=50):
     target_model.eval()
     eagle_module.eval()
 
