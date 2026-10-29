@@ -120,7 +120,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
                 eagle_module=temp_eagle,
                 tokenizer=temp_tokenizer
             )
-            checkpoint_path = os.path.join(config.output_dir, "eagle_module_final.pt")
+            checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
             config.draft_model = checkpoint_path
 
             del temp_target, temp_eagle, temp_tokenizer
