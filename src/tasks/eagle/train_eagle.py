@@ -187,17 +187,21 @@ def log_speculative_metrics(metrics: dict, step: int = None, use_wandb: bool = T
             wandb.log(wandb_payload)
 
 
-def run_eagle_training(config, train_dataset, eval_dataset=None):
+def run_eagle_training(config, train_dataset, eval_dataset=None, base_model=None, **kwargs):
     device = torch.device(config.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Initializing EAGLE training on device: {device}")
 
-    # 1. Load Target Model (Frozen in eval mode)
-    logger.info(f"Loading target model: {config.target_model}")
-    target_model = AutoModelForCausalLM.from_pretrained(
-        config.target_model,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto"
-    )
+    if base_model is not None:
+        logger.info("Using provided base_model instance...")
+        target_model = base_model
+    else:
+        logger.info(f"Loading target model: {config.target_model}")
+        target_model = AutoModelForCausalLM.from_pretrained(
+            config.target_model,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto"
+        )
+
     target_model.eval()
     for param in target_model.parameters():
         param.requires_grad = False
