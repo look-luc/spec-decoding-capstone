@@ -234,6 +234,8 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
         token_lists = []
         pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else (tokenizer.eos_token_id or 0)
 
+        max_seq_len = getattr(config, "max_seq_len", 512)
+
         for r in batch:
             if "token_ids" in r and r["token_ids"] is not None:
                 ids = r["token_ids"]
@@ -245,7 +247,11 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
                 string_val = next((v for k, v in r.items() if k != "origin" and isinstance(v, str)), None)
                 ids = tokenizer.encode(string_val, add_special_tokens=True) if string_val else []
 
-            # CRITICAL FIX: Discard sequences that are too short to supervise
+            # CRITICAL OOM FIX: Truncate overly long sequences
+            if len(ids) > max_seq_len:
+                ids = ids[:max_seq_len]
+
+            # Discard sequences that are too short to supervise
             if len(ids) >= 2:
                 token_lists.append(ids)
 
@@ -267,14 +273,12 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
             input_ids[idx][:item_seq_len] = torch.as_tensor(ids)
             attention_mask[idx][:item_seq_len] = 1
 
-            # CRITICAL FIX: Guarantee label mask is active across valid prediction tokens
             prompt_len = max(1, batch[idx].get("prompt_length", 1))
             if prompt_len >= item_seq_len:
                 prompt_len = 1
 
             label_mask[idx][prompt_len - 1 : item_seq_len - 1] = 1.0
 
-        # Fallback if label mask somehow ended up empty
         if label_mask.sum() == 0:
             label_mask[:, :] = 1.0
 

@@ -39,6 +39,7 @@ class EagleConfig:
     max_samples: int = DEFAULT_MAX_BI
     max_samples_mono: int = DEFAULT_MAX_MONO
     max_new_tokens: int = 128
+    max_seq_len:int = 512
     story_seed: int | None = 0
     device: str = "cuda"
     dataset_path: str | None = None
