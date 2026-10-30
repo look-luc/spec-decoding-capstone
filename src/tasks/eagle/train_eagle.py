@@ -126,6 +126,15 @@ def save_eagle_checkpoint(eagle_module: nn.Module, output_dir: str, label: str =
     logger.info(f"Saved EAGLE weights to: {save_path}")
 
 
+def grad_norm(model: torch.nn.Module) -> float:
+    total_norm = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.detach().data.norm(2)
+            total_norm += param_norm.item() ** 2
+    return total_norm ** 0.5
+
+
 def log_speculative_metrics(metrics: dict, step: int = None, use_wandb: bool = True):
     """
     Logs all speculative decoding metrics, including speedup coefficient,
@@ -187,182 +196,211 @@ def log_speculative_metrics(metrics: dict, step: int = None, use_wandb: bool = T
             wandb.log(wandb_payload)
 
 
-def run_eagle_training(config, train_dataset, eval_dataset=None, base_model=None, **kwargs):
-    device = torch.device(config.device if torch.cuda.is_available() else "cpu")
-    logger.info(f"Initializing EAGLE training on device: {device}")
+def run_eagle_training(config, base_model, eagle_module, tokenizer):
+    device = next(eagle_module.parameters()).device
+    os.makedirs(config.output_dir, exist_ok=True)
 
-    if base_model is not None:
-        logger.info("Using provided base_model instance...")
-        target_model = base_model
-    else:
-        logger.info(f"Loading target model: {config.target_model}")
-        target_model = AutoModelForCausalLM.from_pretrained(
-            config.target_model,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto"
+    if wandb.run is None:
+        wandb.init(
+            project=getattr(config, "wandb_project", "speculative decoding capstone"),
+            config=asdict(config) if hasattr(config, "__dataclass_fields__") else vars(config)
         )
 
-    target_model.eval()
-    for param in target_model.parameters():
-        param.requires_grad = False
+    optimizer = bnb.optim.AdamW8bit(eagle_module.parameters(), lr=config.learning_rate, weight_decay=0.01)
 
-    tokenizer = AutoTokenizer.from_pretrained(config.target_model)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    lang_code = getattr(config, "language_code", "en")
+    dataset_type = getattr(config, "dataset_type", "bi")
+    max_samples = max(getattr(config, "max_samples", 7000), 6000)
 
-    target_hidden_dim = target_model.config.hidden_size
-    vocab_size = target_model.config.vocab_size
-
-    # 2. Initialize EagleModule draft network
-    logger.info("Initializing EagleModule architecture...")
-    eagle_module = EagleModule(
-        vocab_size=vocab_size,
-        embed_dim=getattr(config, "embed_dim", 896),
-        hidden_dim=target_hidden_dim,
-        num_heads=getattr(config, "num_heads", 8),
-        num_layers=getattr(config, "num_layers", 2)
-    ).to(device)
-
-    eagle_module.train()
-
-    # 3. Setup Optimizer, Scheduler, and Scaler
-    optimizer = bnb.optim.AdamW8bit(
-        [p for p in eagle_module.parameters() if p.requires_grad],
-        lr=config.learning_rate,
-        weight_decay=0.01
+    logger.info(f"Assembling dataset in memory for '{lang_code}'...")
+    splits = assemble_dataset(
+        lang_code=lang_code,
+        type=dataset_type,
+        tokenizer=tokenizer,
+        max_samples=max_samples,
     )
+    train_dataset = splits["train"]
+    eval_dataset = splits["test"] if "test" in splits else splits["train"].select([])
+
+    if len(train_dataset) == 0:
+        logger.error("Train dataset is empty.")
+        return
+
+    repo_name = build_repo_name(config)
+    logger.info(f"HF repo: {repo_name}")
+    logger.info(f"Split: {len(train_dataset)} train, {len(eval_dataset)} eval examples")
+
+    def collate_fn(batch):
+        token_lists = []
+        pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else (tokenizer.eos_token_id or 0)
+
+        for r in batch:
+            if "token_ids" in r and r["token_ids"] is not None:
+                ids = r["token_ids"]
+            elif "text" in r and r["text"] is not None:
+                ids = tokenizer.encode(r["text"], add_special_tokens=True)
+            elif config.language_code in r and r[config.language_code] is not None:
+                ids = tokenizer.encode(r[config.language_code], add_special_tokens=True)
+            else:
+                string_val = next((v for k, v in r.items() if k != "origin" and isinstance(v, str)), None)
+                ids = tokenizer.encode(string_val, add_special_tokens=True) if string_val else []
+
+            # CRITICAL FIX: Discard sequences that are too short to supervise
+            if len(ids) >= 2:
+                token_lists.append(ids)
+
+        bs = len(token_lists)
+        if bs == 0:
+            return None
+
+        seq_len = max(len(ids) for ids in token_lists)
+        topk = getattr(config, "top_k", 50)
+
+        input_ids = torch.full((bs, seq_len), pad_id, dtype=torch.long)
+        attention_mask = torch.zeros((bs, seq_len), dtype=torch.long)
+        label_mask = torch.zeros((bs, seq_len - 1), dtype=torch.float32)
+
+        for idx in range(bs):
+            ids = token_lists[idx]
+            item_seq_len = len(ids)
+
+            input_ids[idx][:item_seq_len] = torch.as_tensor(ids)
+            attention_mask[idx][:item_seq_len] = 1
+
+            # CRITICAL FIX: Guarantee label mask is active across valid prediction tokens
+            prompt_len = max(1, batch[idx].get("prompt_length", 1))
+            if prompt_len >= item_seq_len:
+                prompt_len = 1
+
+            label_mask[idx][prompt_len - 1 : item_seq_len - 1] = 1.0
+
+        # Fallback if label mask somehow ended up empty
+        if label_mask.sum() == 0:
+            label_mask[:, :] = 1.0
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "label_mask": label_mask,
+        }
+
+    dataloader = DataLoader(
+        train_dataset,
+        batch_size=getattr(config, "batch_size", 16),
+        shuffle=True,
+        collate_fn=collate_fn,
+    )
+    eval_dataloader = DataLoader(
+        eval_dataset,  # type: ignore[arg-type]
+        batch_size=getattr(config, "batch_size", 16),
+        shuffle=False,
+        pin_memory=(device.type == "cuda"),
+        collate_fn=collate_fn,
+        num_workers=2,
+    )
+
+    scaler = GradScaler("cuda", enabled=(device.type == "cuda"))
+    eagle_module.train()
 
     scheduler = _build_scheduler(optimizer, config)
     start_step = _restore_training_state(config, optimizer, scheduler, device)
-
-    scaler = GradScaler()
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.batch_size,
-        shuffle=True,
-        collate_fn=getattr(train_dataset, "collate_fn", None)
-    )
-
-    eval_loader = None
-    if eval_dataset is not None:
-        eval_loader = DataLoader(
-            eval_dataset,
-            batch_size=config.batch_size,
-            shuffle=False,
-            collate_fn=getattr(eval_dataset, "collate_fn", None)
-        )
-
-    os.makedirs(config.output_dir, exist_ok=True)
     global_step = start_step
-    best_eval_loss = float('inf')
+    max_steps = getattr(config, "max_steps", 1000)
+    log_every = getattr(config, "log_every", 10)
+    eval_every = getattr(config, "eval_every", 100)
+    accum_count = 0
+    log_accum_loss = 0.0
+    log_micro_count = 0
+    best_eval_loss = float("inf")
+    start_time = time.time()
 
     logger.info(f"Starting training loop from step {global_step}...")
-    for epoch in range(getattr(config, "num_epochs", 1)):
-        logger.info(f"--- Epoch {epoch + 1} ---")
-        optimizer.zero_grad()
+    while global_step < max_steps:
+        for batch_idx, batch in enumerate(dataloader):
+            if batch is None:
+                continue
+            if global_step >= max_steps:
+                break
 
-        for step, batch in enumerate(train_loader):
-            input_ids = batch["input_ids"].to(device)
-            labels = batch["labels"].to(device)
+            loss = compute_eagle_loss(eagle_module, base_model, batch, device=device)
 
-            with autocast(dtype=torch.float16):
-                with torch.no_grad():
-                    target_outputs = target_model(
-                        input_ids,
-                        output_hidden_states=True,
-                        use_cache=False
+            if torch.isnan(loss) or loss.item() == 0.0:
+                logger.warning(f"Step {global_step} | Encountered zero or NaN loss. Check target logprobs generation.")
+
+            scaler.scale(loss / config.grad_accum_steps).backward()
+            accum_count += 1
+            log_accum_loss += loss.item()
+            log_micro_count += 1
+
+            if accum_count < config.grad_accum_steps:
+                continue
+
+            scaler.unscale_(optimizer)
+            unclipped_grad_norm = grad_norm(eagle_module)
+            torch.nn.utils.clip_grad_norm_(eagle_module.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            optimizer.zero_grad()
+            accum_count = 0
+
+            global_step += 1
+
+            if global_step % eval_every == 0 and len(eval_dataset) > 0:
+                eval_loss = _compute_eval_loss(eagle_module, base_model, eval_dataloader, device)
+                logger.info(f"Step {global_step} | Eval loss: {eval_loss:.4f}")
+                wandb.log({"eval/loss": eval_loss, "step": global_step})
+                if eval_loss < best_eval_loss:
+                    best_eval_loss = eval_loss
+                    _save_checkpoint(
+                        eagle_module, tokenizer, optimizer, config.output_dir, "best", repo_name,
+                        push_to_hub=False, scheduler=scheduler,
                     )
-                    hidden_states = target_outputs.hidden_states[-1]
+                    torch.save(eagle_module.state_dict(), os.path.join(config.output_dir, "eagle_module_best.pt"))
 
-                shift_input_ids = input_ids[:, :-1]
-                shift_hidden = hidden_states[:, :-1, :]
-                shift_labels = labels[:, 1:]
-
-                _, logits = eagle_module(shift_input_ids, shift_hidden)
-
-                loss_fct = nn.CrossEntropyLoss()
-                loss = loss_fct(logits.reshape(-1, vocab_size), shift_labels.reshape(-1))
-
-                if config.grad_accum_steps > 1:
-                    loss = loss / config.grad_accum_steps
-
-            scaler.scale(loss).backward()
-
-            if (step + 1) % config.grad_accum_steps == 0 or (step + 1) == len(train_loader):
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(eagle_module.parameters(), max_norm=1.0)
-
-                scaler.step(optimizer)
-                scaler.update()
-                scheduler.step()  # Step the learning rate scheduler
-                optimizer.zero_grad()
-                global_step += 1
-
-                if global_step % config.log_every == 0:
-                    current_loss = loss.item() * config.grad_accum_steps
-                    current_lr = scheduler.get_last_lr()[0]
-                    logger.info(f"Global Step {global_step} | Loss: {current_loss:.4f} | LR: {current_lr:.6f}")
-                    if wandb.run is not None:
-                        wandb.log({"train/loss": current_loss, "train/lr": current_lr}, step=global_step)
-
-                if global_step >= config.max_steps:
-                    break
-
-        # 4. Evaluate and save ONLY the best checkpoint using _save_checkpoint
-        if eval_loader is not None:
-            eval_loss = _compute_eval_loss(eagle_module, target_model, eval_loader, device)
-            logger.info(f"Epoch {epoch + 1} Evaluation Loss: {eval_loss:.4f}")
-            if wandb.run is not None:
-                wandb.log({"eval/loss": eval_loss}, step=global_step)
-
-            if eval_loss < best_eval_loss:
-                best_eval_loss = eval_loss
-                logger.info(f"⭐ New best model found! (Eval Loss: {best_eval_loss:.4f}). Saving checkpoint...")
-                _save_checkpoint(
-                    student=eagle_module,
-                    tokenizer=tokenizer,
-                    optimizer=optimizer,
-                    output_dir=config.output_dir,
-                    label="best",
-                    repo_name=getattr(config, "hf_repo_id", None),
-                    push_to_hub=getattr(config, "push_to_hub", False),
-                    scheduler=scheduler
+            if global_step % log_every == 0:
+                avg_loss = log_accum_loss / max(log_micro_count, 1)
+                current_lr = scheduler.get_last_lr()[0]
+                elapsed = time.time() - start_time
+                logger.info(
+                    f"Step {global_step} | Loss: {avg_loss:.4f} | "
+                    f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s"
                 )
-                # Also save a copy as eagle_module_best.pt for generation.py compatibility
-                torch.save(eagle_module.state_dict(), os.path.join(config.output_dir, "eagle_module_best.pt"))
-        else:
-            # Fallback if no eval loader
-            _save_checkpoint(
-                student=eagle_module,
-                tokenizer=tokenizer,
-                optimizer=optimizer,
-                output_dir=config.output_dir,
-                label="best",
-                repo_name=getattr(config, "hf_repo_id", None),
-                push_to_hub=getattr(config, "push_to_hub", False),
-                scheduler=scheduler
-            )
-            torch.save(eagle_module.state_dict(), os.path.join(config.output_dir, "eagle_module_best.pt"))
+                wandb.log({
+                    "train/loss": avg_loss,
+                    "train/lr": current_lr,
+                    "train/grad_norm": unclipped_grad_norm,
+                    "train/epoch": global_step,
+                    "step": global_step
+                })
+                log_accum_loss = 0.0
+                log_micro_count = 0
 
-        if global_step >= config.max_steps:
-            break
+    save_eagle_checkpoint(eagle_module, config.output_dir, label="final")
+    torch.save(eagle_module.state_dict(), os.path.join(config.output_dir, "eagle_module_best.pt"))
 
-    # 5. Post-Training Audit & Metrics Evaluation
-    logger.info("Running post-training speculative correctness audit & speedup coefficient evaluation...")
-    if eval_loader is not None:
-        audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_loader, device=device, max_samples=20)
+    logger.info("Running post-training correctness audit & metrics evaluation...")
+    audit_speculative_correctness(
+        target_model=base_model,
+        eagle_module=eagle_module,
+        tokenizer=tokenizer,
+        eval_dataloader=eval_dataloader,
+        device=device,
+        max_samples=20
+    )
 
-        eagle_module.eval()
-        with torch.no_grad():
-            for batch in eval_loader:
+    eagle_module.eval()
+    with torch.no_grad():
+        for batch in eval_dataloader:
+            if batch is not None:
                 sample_prompt = batch["input_ids"][:1, :5].to(device)
                 _, metrics = spec_decode_eagle(
-                    target_model=target_model,
+                    target_model=base_model,
                     eagle_module=eagle_module,
                     tokenizer=tokenizer,
                     input_ids=sample_prompt,
-                    mode=config.decoding_mode,
-                    max_new_tokens=config.max_new_tokens,
+                    mode=getattr(config, "decoding_mode", "greedy"),
+                    max_new_tokens=getattr(config, "max_new_tokens", 128),
                     tree_choices=getattr(config, "tree_choices", "custom"),
                     device=device
                 )
@@ -371,6 +409,7 @@ def run_eagle_training(config, train_dataset, eval_dataset=None, base_model=None
 
     logger.info("EAGLE training and evaluation completed successfully!")
     return eagle_module
+
 
 def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_dataloader, device="cuda", max_samples=50):
     target_model.eval()
@@ -384,7 +423,7 @@ def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_da
         for batch in eval_dataloader:
             if batch is None:
                 continue
-            input_ids = batch["input_ids"][:, :5].to(device)  # Use prompt prefix
+            input_ids = batch["input_ids"][:, :5].to(device)
 
             for i in range(input_ids.size(0)):
                 if total_samples >= max_samples:
@@ -392,7 +431,6 @@ def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_da
 
                 prompt = input_ids[i:i+1]
 
-                # 1. Target-only greedy baseline generation
                 target_out = target_model.generate(
                     prompt,
                     max_new_tokens=64,
@@ -401,7 +439,6 @@ def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_da
                     eos_token_id=tokenizer.eos_token_id
                 )
 
-                # 2. Speculative decoding generation
                 spec_out, _ = spec_decode_eagle(
                     target_model=target_model,
                     eagle_module=eagle_module,
@@ -435,6 +472,7 @@ def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_da
         wandb.log({"eval/correctness_agreement_rate": agreement_rate})
     return agreement_rate
 
+
 def _restore_training_state(config: Any, optimizer: optim.Optimizer, scheduler: LambdaLR, device: torch.device) -> int:
     start_step = 0
     resume_from = getattr(config, "resume_from", None)
@@ -462,8 +500,9 @@ def _restore_training_state(config: Any, optimizer: optim.Optimizer, scheduler: 
                 scheduler.step()
     return start_step
 
+
 def _build_scheduler(optimizer: optim.Optimizer, config: Any) -> LambdaLR:
-    max_steps = getattr(config, "max_steps", 225)
+    max_steps = getattr(config, "max_steps", 1000)
     warmup_steps = getattr(config, "warmup_steps", 20)
 
     def lr_lambda(current_step: int) -> float:
@@ -475,6 +514,7 @@ def _build_scheduler(optimizer: optim.Optimizer, config: Any) -> LambdaLR:
         return max(0.2, cosine_decay)
 
     return LambdaLR(optimizer, lr_lambda)
+
 
 def _save_checkpoint(
     student,
@@ -512,6 +552,7 @@ def _save_checkpoint(
             tokenizer.push_to_hub(hub_repo, commit_message=f"Tokenizer (step {label})")
         logger.info(f"Pushed: https://huggingface.co/{hub_repo}")
 
+
 def build_repo_name(cfg: Any) -> str:
     hf_repo_id = getattr(cfg, "hf_repo_id", None)
     if hf_repo_id:
@@ -521,10 +562,12 @@ def build_repo_name(cfg: Any) -> str:
     lang = getattr(cfg, "language_code", "en")
     return f"{model_short}-medusa-{lang}"
 
+
 def _model_short_name(model_name: str | None) -> str:
     if not model_name:
         return "unknown_model"
     return model_name.strip("/").split("/")[-1]
+
 
 def setup_wandb(config: Any):
     model_short = _model_short_name(config.draft_model or config.target_model)
