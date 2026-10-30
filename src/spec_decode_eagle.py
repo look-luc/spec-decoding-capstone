@@ -371,7 +371,7 @@ def spec_decode_eagle(
     top_p: float = 0.0,
     repetition_penalty: float = 1.0,
     repetition_penalty_window: int = 16,
-    score_threshold: float = 0.05,
+    score_threshold: float = 0.01,
     eos_token_id: int | None = None,
     device=None,
     track_iterations: bool = False
@@ -431,6 +431,7 @@ def spec_decode_eagle(
     total_draft_tokens = 0
     total_matched_tokens = 0
     num_iterations = 0
+    termination_reason = "max_tokens"
 
     max_depth = len(tree_choices_arr)
     per_position_draft_count = [0] * max_depth
@@ -460,6 +461,14 @@ def spec_decode_eagle(
         cur_gen_idx += 1
 
         while cur_gen_idx < generated_tokens.size(-1):
+            # Anti-degeneration guard for runaway repetition loops
+            if cur_gen_idx - prompt_len > 10:
+                recent_tokens = generated_tokens[0, cur_gen_idx-6:cur_gen_idx].tolist()
+                if len(recent_tokens) >= 6 and recent_tokens[:3] == recent_tokens[3:]:
+                    generated_tokens = generated_tokens[:, :cur_gen_idx]
+                    termination_reason = "degenerate_loop"
+                    break
+
             num_iterations += 1
             curr_token = generated_tokens[:, cur_gen_idx - 1]
 
@@ -597,6 +606,7 @@ def spec_decode_eagle(
 
             if torch.isin(tokens_to_add, stop_token_ids).any():
                 generated_tokens = generated_tokens[:, :cur_gen_idx]
+                termination_reason = "eos"
                 break
 
     total_time = get_time() - start_time
@@ -608,12 +618,28 @@ def spec_decode_eagle(
         for acc, draf in zip(per_position_accept_count, per_position_draft_count)
     ]
 
+    # Calculate theoretical speed-up factor (f) from the reference paper
+    speed_up_factor = 1.0
+    c = 0.0
+    if draft_times_acc[2] > 0 and verifier_times_acc[2] > 0:
+        avg_draft = (draft_times_acc[0] / draft_times_acc[2]) / 1000.0
+        avg_verify = (verifier_times_acc[0] / verifier_times_acc[2]) / 1000.0
+        c = avg_draft / avg_verify if avg_verify > 0 else 0.0
+        gamma = len(tree_choices_arr)
+
+        numerator = 1.0 - (acceptance_rate ** (gamma + 1))
+        denominator = (1.0 - acceptance_rate) * (gamma * c + 1.0)
+        speed_up_factor = numerator / denominator if denominator > 0 else 1.0
+
     metrics = {
         "time": total_time,
         "generated_tokens": total_generated_tokens,
         "draft_tokens": total_draft_tokens,
         "matched_tokens": total_matched_tokens,
         "acceptance_rate": acceptance_rate,
+        "speed_up_factor": speed_up_factor,
+        "inference_cost_ratio": c,
+        "termination_reason": termination_reason,
         "octile_position_acceptance": octile_position_acceptance,
         "octile_positions": octile_offsets,
         "num_iterations": num_iterations,

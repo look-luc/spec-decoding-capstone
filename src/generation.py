@@ -76,23 +76,47 @@ def generate_output(
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         return cast(str, decoded).strip(), metrics
     if isinstance(draft_model, EagleModule) or config.draft_model_type.lower() == "eagle":
-        eagle_module = draft_model
+            # Pull dimensions from the loaded target model instance
+            target_hidden_dim = model.config.hidden_size  # e.g., 4096 for 7B/9B
+            vocab_size = model.config.vocab_size
 
-        output_ids, metrics = spec_decode_eagle(
-            target_model=model,
-            eagle_module=eagle_module,
-            tokenizer=tokenizer,
-            input_ids=inputs["input_ids"],
-            mode=config.decoding_mode,
-            max_new_tokens=config.max_new_tokens,
-            tree_choices=getattr(config, "tree_choices", "custom"),
-            top_k=config.top_k,
-            top_p=config.top_p,
-            repetition_penalty=config.repetition_penalty,
-            device=inputs["input_ids"].device
-        )
-        decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
-        return cast(str, decoded).strip(), metrics
+            # Initialize the EagleModule architecture
+            eagle_module = EagleModule(
+                vocab_size=vocab_size,
+                embed_dim=getattr(config, "embed_dim", 896),
+                hidden_dim=target_hidden_dim,
+                num_heads=getattr(config, "num_heads", 8),
+                num_layers=getattr(config, "num_layers", 2)
+            ).to(config.device)
+
+            # CRITICAL FIX: Load your trained checkpoint weights!
+            checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+            if os.path.exists(checkpoint_path):
+                state_dict = torch.load(checkpoint_path, map_location=config.device)
+                eagle_module.load_state_dict(state_dict)
+            else:
+                raise FileNotFoundError(
+                    f"Trained EAGLE checkpoint not found at {checkpoint_path}. "
+                    "Make sure training completed and saved the best checkpoint."
+                )
+
+            eagle_module.eval()
+
+            output_ids, metrics = spec_decode_eagle(
+                target_model=model,
+                eagle_module=eagle_module,
+                tokenizer=tokenizer,
+                input_ids=inputs["input_ids"],
+                mode=config.decoding_mode,
+                max_new_tokens=config.max_new_tokens,
+                tree_choices=getattr(config, "tree_choices", "custom"),
+                top_k=config.top_k,
+                top_p=config.top_p,
+                repetition_penalty=config.repetition_penalty,
+                device=inputs["input_ids"].device
+            )
+            decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
+            return cast(str, decoded).strip(), metrics
     if isinstance(draft_model, NGramModel):
         raise ValueError(
             "NGramModel can only be used with bespoke decoding implementation!"

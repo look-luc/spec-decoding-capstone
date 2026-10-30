@@ -12,14 +12,13 @@ class EagleConfig:
     task: Literal['translation', 'story_gen']
     language_code: str
 
-    target_model: str
-    draft_model: str | None
-    draft_model_type: Literal["eagle", "Eagle"]
-    decoding_mode: Literal["greedy", "sample"]
+    target_model: str = "Qwen/Qwen3.5-9B"
+    draft_model: str | None = "Qwen/Qwen3.5-0.8B"
+    draft_model_type: Literal["eagle", "Eagle"] = "eagle"
+    decoding_mode: Literal["greedy", "sample"] = "greedy"
     tree_choices: str|list[int] = "custom"
-    num_heads: int = 4
-    num_layers: int = 2
-    score_threshold: float = 0.01
+
+    score_threshold: float = 0.02
     distillation_beta: float = 0.3
     top_k: int = 0
     top_p: float = 0.0
@@ -28,7 +27,9 @@ class EagleConfig:
     repetition_penalty_window: int = 16
 
     gamma: int = 5
-    track_iterations: bool = False
+    num_heads: int = 8
+    num_layers: int = 2
+    track_iterations: bool = True
 
     ngram_n: int = 2
 
@@ -42,15 +43,15 @@ class EagleConfig:
     device: str = "cuda"
     dataset_path: str | None = None
 
-    learning_rate: float = 2e-5
-    batch_size: int = 32
-    grad_accum_steps: int = 2
-    eval_every: int = 50
-    max_steps: int = 500
-    warmup_steps: int = 20
+    learning_rate: float = 1e-4
+    batch_size: int = 16
+    grad_accum_steps: int = 4
+    eval_every: int = 500
+    max_steps: int = 3000
+    warmup_steps: int = 200
     log_every: int = 10
-    wandb_tag: str | None = "Eagle 1 225 steps"
-    output_dir: str = "checkpoints"
+    wandb_tag: str | None = "Eagle 7B Target"
+    output_dir: str = "checkpoints/eagle_7b"
     wandb_project: str = WANDB_PROJECT
 
     def __post_init__(self):
