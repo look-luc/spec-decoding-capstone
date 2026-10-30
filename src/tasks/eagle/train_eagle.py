@@ -290,13 +290,13 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
 
     dataloader = DataLoader(
         train_dataset,
-        batch_size=getattr(config, "batch_size", 16),
+        batch_size=getattr(config, "batch_size", 1),
         shuffle=True,
         collate_fn=collate_fn,
     )
     eval_dataloader = DataLoader(
         eval_dataset,  # type: ignore[arg-type]
-        batch_size=getattr(config, "batch_size", 16),
+        batch_size=getattr(config, "batch_size", 1),
         shuffle=False,
         pin_memory=(device.type == "cuda"),
         collate_fn=collate_fn,

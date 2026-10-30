@@ -106,7 +106,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
     elif config.draft_model_type == "eagle":
         if not checkpoint_path or not os.path.exists(checkpoint_path):
             logger.info("EAGLE checkpoint not found or not specified. Training EAGLE module...")
-            temp_target, temp_tokenizer = load_model(str(model_name), device=config.device) # <--- Unpack tokenizer here
+            temp_target, temp_tokenizer = load_model(str(model_name), device=config.device)
             temp_eagle = EagleModule(
                 vocab_size=temp_target.config.vocab_size,
                 embed_dim=temp_target.config.hidden_size,

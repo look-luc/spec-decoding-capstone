@@ -45,7 +45,7 @@ class EagleConfig:
     dataset_path: str | None = None
 
     learning_rate: float = 1e-4
-    batch_size: int = 16
+    batch_size: int = 1
     grad_accum_steps: int = 4
     eval_every: int = 500
     max_steps: int = 3000
