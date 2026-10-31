@@ -168,7 +168,8 @@ def build_eagle_tree_attn(tree_nodes, base_seq_len, device):
     num_nodes = len(tree_nodes)
     total_len = base_seq_len + num_nodes
 
-    attn_mask = torch.full((num_nodes, total_len), -10000.0, dtype=torch.float32, device=device)
+    # Use -float("inf") to guarantee strict masking in FP16/BF16
+    attn_mask = torch.full((num_nodes, total_len), -float("inf"), dtype=torch.float32, device=device)
     pos_ids = torch.zeros(num_nodes, dtype=torch.long, device=device)
 
     for i in range(num_nodes):

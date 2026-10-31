@@ -415,7 +415,16 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
     return eagle_module
 
 
-def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_dataloader, device="cuda", max_samples=50):
+def audit_speculative_correctness(
+    target_model,
+    eagle_module,
+    tokenizer,
+    eval_dataloader,
+    device="cuda",
+    max_samples=50,
+    tree_choices="shallow_1",
+    repetition_penalty=1.0
+):
     target_model.eval()
     eagle_module.eval()
 
@@ -427,30 +436,46 @@ def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_da
         for batch in eval_dataloader:
             if batch is None:
                 continue
-            input_ids = batch["input_ids"][:, :5].to(device)
+            input_ids = batch["input_ids"].to(device)
+            label_mask = batch["label_mask"].to(device)
 
             for i in range(input_ids.size(0)):
                 if total_samples >= max_samples:
                     break
 
-                prompt = input_ids[i:i+1]
+                # Correctly derive prompt length from label_mask instead of hardcoding [:5]
+                item_label_mask = label_mask[i]
+                supervised_indices = (item_label_mask == 1.0).nonzero(as_tuple=True)[0]
+                if len(supervised_indices) == 0:
+                    continue
+                prompt_len = supervised_indices[0].item() + 1
 
+                prompt = input_ids[i:i+1, :prompt_len]
+                full_seq = input_ids[i:i+1]
+                max_new_tokens = full_seq.size(1) - prompt_len
+                if max_new_tokens <= 0:
+                    max_new_tokens = 64
+
+                # Standard target generation with matching decoding settings
                 target_out = target_model.generate(
                     prompt,
-                    max_new_tokens=64,
+                    max_new_tokens=max_new_tokens,
                     do_sample=False,
+                    repetition_penalty=repetition_penalty,
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id
                 )
 
+                # Speculative generation with matching tree choices & penalty
                 spec_out, _ = spec_decode_eagle(
                     target_model=target_model,
                     eagle_module=eagle_module,
                     tokenizer=tokenizer,
                     input_ids=prompt,
                     mode="greedy",
-                    max_new_tokens=64,
-                    tree_choices="balance_1",
+                    max_new_tokens=max_new_tokens,
+                    tree_choices=tree_choices,
+                    repetition_penalty=repetition_penalty,
                     device=device
                 )
 
@@ -463,6 +488,7 @@ def audit_speculative_correctness(target_model, eagle_module, tokenizer, eval_da
                     exact_matches += 1
                 else:
                     print(f"\n[Mismatch] Sample {total_samples}")
+                    print(f"Prompt:      {tokenizer.decode(prompt[0], skip_special_tokens=True)}")
                     print(f"Target text: {tokenizer.decode(target_out[0], skip_special_tokens=True)}")
                     print(f"Spec text:   {tokenizer.decode(spec_out[0], skip_special_tokens=True)}")
 
