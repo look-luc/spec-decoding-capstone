@@ -14,6 +14,10 @@ from src.spec_decode import speculative_decode
 from src.spec_decode_eagle import spec_decode_eagle
 from src.spec_decode_madusa import speculative_decode as madusa_spec
 
+# Module-level cache to prevent re-initializing and re-compiling torch.compile() on every sample
+_CACHED_EAGLE_MODULE = None
+_CACHED_CHECKPOINT_PATH = None
+
 
 def generate_output(
     inputs: dict,
@@ -60,6 +64,7 @@ def generate_output(
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         decoded = cast(str, decoded).strip()
         return decoded, metrics
+
     if isinstance(draft_model, madusa) or config.draft_model_type.lower() == "medusa":
         num_heads = config.num_heads
         output_ids, metrics = madusa_spec(
@@ -75,12 +80,16 @@ def generate_output(
         )
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         return cast(str, decoded).strip(), metrics
+
     if isinstance(draft_model, EagleModule) or config.draft_model_type.lower() == "eagle":
-            # Pull dimensions from the loaded target model instance
-            target_hidden_dim = model.config.hidden_size  # e.g., 4096 for 7B/9B
+        global _CACHED_EAGLE_MODULE, _CACHED_CHECKPOINT_PATH
+        checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+
+        # Initialize, load weights, and compile ONLY ONCE
+        if _CACHED_EAGLE_MODULE is None or _CACHED_CHECKPOINT_PATH != checkpoint_path:
+            target_hidden_dim = model.config.hidden_size
             vocab_size = model.config.vocab_size
 
-            # Initialize the EagleModule architecture
             eagle_module = EagleModule(
                 vocab_size=vocab_size,
                 embed_dim=getattr(config, "embed_dim", target_hidden_dim),
@@ -88,10 +97,7 @@ def generate_output(
                 num_heads=getattr(config, "num_heads", 8),
                 num_layers=getattr(config, "num_layers", 2)
             ).to(config.device)
-            eagle_module = torch.compile(eagle_module, mode="reduce-overhead")
 
-            # CRITICAL FIX: Load your trained checkpoint weights!
-            checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
             if os.path.exists(checkpoint_path):
                 state_dict = torch.load(checkpoint_path, map_location=config.device)
                 eagle_module.load_state_dict(state_dict)
@@ -101,23 +107,30 @@ def generate_output(
                     "Make sure training completed and saved the best checkpoint."
                 )
 
-            eagle_module.eval()
+            # Compile once using torch.compile
+            eagle_module = torch.compile(eagle_module, mode="reduce-overhead")
+            _CACHED_EAGLE_MODULE = eagle_module
+            _CACHED_CHECKPOINT_PATH = checkpoint_path
 
-            output_ids, metrics = spec_decode_eagle(
-                target_model=model,
-                eagle_module=eagle_module,
-                tokenizer=tokenizer,
-                input_ids=inputs["input_ids"],
-                mode=config.decoding_mode,
-                max_new_tokens=config.max_new_tokens,
-                tree_choices=getattr(config, "tree_choices", "custom"),
-                top_k=config.top_k,
-                top_p=config.top_p,
-                repetition_penalty=config.repetition_penalty,
-                device=inputs["input_ids"].device
-            )
-            decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
-            return cast(str, decoded).strip(), metrics
+        eagle_module = _CACHED_EAGLE_MODULE
+        eagle_module.eval()
+
+        output_ids, metrics = spec_decode_eagle(
+            target_model=model,
+            eagle_module=eagle_module,
+            tokenizer=tokenizer,
+            input_ids=inputs["input_ids"],
+            mode=config.decoding_mode,
+            max_new_tokens=config.max_new_tokens,
+            tree_choices=getattr(config, "tree_choices", "custom"),
+            top_k=config.top_k,
+            top_p=config.top_p,
+            repetition_penalty=config.repetition_penalty,
+            device=inputs["input_ids"].device
+        )
+        decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
+        return cast(str, decoded).strip(), metrics
+
     if isinstance(draft_model, NGramModel):
         raise ValueError(
             "NGramModel can only be used with bespoke decoding implementation!"
@@ -125,7 +138,6 @@ def generate_output(
 
     # Otherwise, use HF decoding
     with torch.no_grad():
-        # Measure prefill time (one forward pass to fill KV cache)
         prefill_start = get_time()
         model(inputs["input_ids"], use_cache=True)
         prefill_time = get_time() - prefill_start
@@ -142,7 +154,6 @@ def generate_output(
         else:
             generate_kwargs = {}
 
-        # Generate (this re-does prefill internally)
         gen_start = get_time()
         out = model.generate(
             **inputs,
@@ -155,7 +166,6 @@ def generate_output(
 
     decode_time = total_time - prefill_time
 
-    # Decode only the new tokens (after the prompt)
     generated_token_count = out.shape[1] - prompt_len
     decoded = tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True)
     decoded = cast(str, decoded).strip()
