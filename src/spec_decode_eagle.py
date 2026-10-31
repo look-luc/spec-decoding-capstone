@@ -4,6 +4,7 @@ from typing import Literal, cast
 
 import torch
 import torch.nn as nn
+from transformers.cache_utils import DynamicCache
 
 
 def get_stop_token_ids(tokenizer, eos_token_id=None):
@@ -50,7 +51,6 @@ def extract_token_ids(tree_nodes, device=None):
         ids.append(tid)
     return torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)
 
-
 def extract_all_leaf_paths(tree_nodes):
     leaf_paths = []
     for node in tree_nodes:
@@ -64,56 +64,21 @@ def extract_all_leaf_paths(tree_nodes):
     return leaf_paths
 
 
-def crop_kv_cache(past_key_values, new_length):
-    if past_key_values is None:
-        return None
-
-    if hasattr(past_key_values, "crop"):
-        try:
-            past_key_values.crop(new_length)
-            return past_key_values
-        except Exception:
-            pass
-
-    if hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"):
-        for i in range(len(past_key_values.key_cache)):
-            k = past_key_values.key_cache[i]
-            v = past_key_values.value_cache[i]
-            if k is not None and isinstance(k, torch.Tensor):
-                past_key_values.key_cache[i] = k[..., :new_length, :]
-            if v is not None and isinstance(v, torch.Tensor):
-                past_key_values.value_cache[i] = v[..., :new_length, :]
-        if hasattr(past_key_values, "_seen_tokens"):
-            past_key_values._seen_tokens = new_length
-        return past_key_values
-
-    if isinstance(past_key_values, (tuple, list)):
-        new_past = []
-        for layer_past in past_key_values:
-            if isinstance(layer_past, torch.Tensor):
-                new_past.append(layer_past[..., :new_length])
-            elif isinstance(layer_past, (tuple, list)) and len(layer_past) == 2:
-                key_state, value_state = layer_past
-                if isinstance(key_state, torch.Tensor) and isinstance(value_state, torch.Tensor):
-                    new_past.append((key_state[..., :new_length, :], value_state[..., :new_length, :]))
-                else:
-                    new_past.append(layer_past)
-            else:
-                new_past.append(layer_past)
-        return tuple(new_past)
-
-    return past_key_values
-
-
 def get_kv_cache_length(past_key_values) -> int:
     if past_key_values is None:
         return 0
     if hasattr(past_key_values, "get_seq_length"):
         return past_key_values.get_seq_length()
-    if hasattr(past_key_values, "key_cache") and len(past_key_values.key_cache) > 0:
-        for k in past_key_values.key_cache:
+
+    k_cache = getattr(past_key_values, "key_cache", None)
+    if k_cache is None:
+        k_cache = getattr(past_key_values, "_key_cache", None)
+
+    if k_cache is not None and len(k_cache) > 0:
+        for k in k_cache:
             if k is not None and isinstance(k, torch.Tensor):
                 return k.size(2) if len(k.shape) == 4 else k.size(-1)
+
     if isinstance(past_key_values, tuple) and len(past_key_values) > 0:
         first_item = past_key_values[0]
         if isinstance(first_item, torch.Tensor):
@@ -121,7 +86,6 @@ def get_kv_cache_length(past_key_values) -> int:
         elif isinstance(first_item, (tuple, list)) and len(first_item) > 0:
             return first_item[0].size(2) if len(first_item[0].shape) == 4 else first_item[0].size(-1)
     return 0
-
 
 def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
     if kv_cache is None:
@@ -134,10 +98,18 @@ def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
         kv_cache.crop(base_seq_len)
         return kv_cache
 
-    if hasattr(kv_cache, "key_cache") and hasattr(kv_cache, "value_cache"):
-        for layer_idx in range(len(kv_cache.key_cache)):
-            k_state = kv_cache.key_cache[layer_idx]
-            v_state = kv_cache.value_cache[layer_idx]
+    k_cache = getattr(kv_cache, "key_cache", None)
+    if k_cache is None:
+        k_cache = getattr(kv_cache, "_key_cache", None)
+
+    v_cache = getattr(kv_cache, "value_cache", None)
+    if v_cache is None:
+        v_cache = getattr(kv_cache, "_value_cache", None)
+
+    if k_cache is not None and v_cache is not None:
+        for layer_idx in range(len(k_cache)):
+            k_state = k_cache[layer_idx]
+            v_state = v_cache[layer_idx]
 
             if k_state is not None and v_state is not None and isinstance(k_state, torch.Tensor):
                 base_k = k_state[..., :base_seq_len, :]
@@ -145,8 +117,8 @@ def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
                 path_k = k_state[..., path_indices, :]
                 path_v = v_state[..., path_indices, :]
 
-                kv_cache.key_cache[layer_idx] = torch.cat([base_k, path_k], dim=-2)
-                kv_cache.value_cache[layer_idx] = torch.cat([base_v, path_v], dim=-2)
+                k_cache[layer_idx] = torch.cat([base_k, path_k], dim=-2)
+                v_cache[layer_idx] = torch.cat([base_v, path_v], dim=-2)
 
         if hasattr(kv_cache, "_seen_tokens"):
             kv_cache._seen_tokens = base_seq_len + len(accepted_idxs)
@@ -175,7 +147,6 @@ def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
 
     return kv_cache
 
-
 def get_node_depth(node):
     depth = 0
     curr = node
@@ -183,7 +154,6 @@ def get_node_depth(node):
         depth += 1
         curr = curr.parent
     return depth
-
 
 def get_ancestor_tokens(node):
     tokens = []
@@ -309,12 +279,12 @@ def eagle_draft_tree_expansion(
                 tgt_is_causal=(seq_len > 1)
             )
 
-        next_hiddens = hidden[:, -1, :]  # Shape: (num_parents, hidden_dim)
-        draft_raw_logits = eagle_module.lm_head(next_hiddens)  # Shape: (num_parents, vocab_size)
+        next_hiddens = hidden[:, -1, :]
+        draft_raw_logits = eagle_module.lm_head(next_hiddens)
 
         processed_logprobs_list = []
         for i, parent in enumerate(active_parents):
-            logits_i = draft_raw_logits[i : i + 1]  # (1, vocab_size)
+            logits_i = draft_raw_logits[i : i + 1]
 
             if repetition_penalty != 1.0:
                 ancestor_token_list = get_ancestor_tokens(parent)
@@ -334,7 +304,6 @@ def eagle_draft_tree_expansion(
             processed_logprobs_list.append(logprobs_i.squeeze(0))
 
         processed_logprobs = torch.stack(processed_logprobs_list, dim=0)
-
         top_scores, top_token_ids = torch.topk(processed_logprobs, k=branch_factor, dim=-1)
 
         next_parents = []
@@ -461,7 +430,6 @@ def spec_decode_eagle(
         cur_gen_idx += 1
 
         while cur_gen_idx < generated_tokens.size(-1):
-            # Anti-degeneration guard for runaway repetition loops
             if cur_gen_idx - prompt_len > 10:
                 recent_tokens = generated_tokens[0, cur_gen_idx-6:cur_gen_idx].tolist()
                 if len(recent_tokens) >= 6 and recent_tokens[:3] == recent_tokens[3:]:
@@ -618,7 +586,6 @@ def spec_decode_eagle(
         for acc, draf in zip(per_position_accept_count, per_position_draft_count)
     ]
 
-    # Calculate theoretical speed-up factor (f) from the reference paper
     speed_up_factor = 1.0
     c = 0.0
     if draft_times_acc[2] > 0 and verifier_times_acc[2] > 0:
@@ -685,13 +652,6 @@ def apply_top_k(logits: torch.Tensor, k: int) -> torch.Tensor:
     kth_value = top_values[..., -1, None]
     indices_to_remove = logits < kth_value
     return logits.masked_fill(indices_to_remove, float("-inf"))
-
-
-def top_k_sampling(logprobs, k):
-    if logprobs.ndim > 1:
-        logprobs = logprobs.squeeze(0)
-    sorted_logprobs, sorted_idxs = torch.sort(logprobs, descending=True, dim=-1)
-    return sorted_logprobs[:k], sorted_idxs[:k]
 
 
 def apply_top_p(logits: torch.Tensor, p: float) -> torch.Tensor:

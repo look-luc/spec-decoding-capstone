@@ -83,11 +83,12 @@ def generate_output(
             # Initialize the EagleModule architecture
             eagle_module = EagleModule(
                 vocab_size=vocab_size,
-                embed_dim=getattr(config, "embed_dim", 896),
+                embed_dim=getattr(config, "embed_dim", target_hidden_dim),
                 hidden_dim=target_hidden_dim,
                 num_heads=getattr(config, "num_heads", 8),
                 num_layers=getattr(config, "num_layers", 2)
             ).to(config.device)
+            eagle_module = torch.compile(eagle_module, mode="reduce-overhead")
 
             # CRITICAL FIX: Load your trained checkpoint weights!
             checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
