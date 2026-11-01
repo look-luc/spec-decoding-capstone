@@ -2,6 +2,7 @@
 Load models for speculative decoding tasks.
 """
 import logging
+from typing import Any
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -19,7 +20,7 @@ def _resolve_device(device: str) -> torch.device:
     return torch.device(device)
 
 
-def load_model(model_name: str, device: str = "auto", load_in_4bit: bool = True):
+def load_model(model_name: str, device: str = "auto", load_in_4bit: bool = True, draft_model_type:str="eagle"):
     """
     Load a HuggingFace model and tokenizer with optional 4-bit quantization.
 
@@ -45,19 +46,24 @@ def load_model(model_name: str, device: str = "auto", load_in_4bit: bool = True)
             bnb_4bit_use_double_quant=True,
         )
 
+    # Consolidate all extra parameters into kwargs to avoid duplicate keyword arguments
+    kwargs: dict[str, Any] = {"trust_remote_code": True}
+    if draft_model_type.lower() == "eagle":
+        kwargs["attn_implementation"] = "eager"
+
     if dev.type == "cuda":
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             quantization_config=quantization_config,
             dtype=torch.bfloat16 if quantization_config is None else None,
             device_map="auto",
-            trust_remote_code=True,
+            **kwargs,
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             dtype=torch.bfloat16 if dev.type == "mps" else torch.float32,
-            trust_remote_code=True,
+            **kwargs,
         )
         model = model.to(dev)
 

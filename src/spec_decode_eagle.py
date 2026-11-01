@@ -91,59 +91,22 @@ def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
     if kv_cache is None:
         return None
 
-    accepted_idxs = [node.index for node in accepted_path_nodes]
-    path_indices = [base_seq_len + i for i in accepted_idxs]
-
-    if hasattr(kv_cache, "crop") and len(accepted_path_nodes) == 0:
+    # If using HuggingFace DynamicCache
+    if hasattr(kv_cache, "crop"):
+        # Truncate cache back to valid base sequence length
         kv_cache.crop(base_seq_len)
         return kv_cache
 
-    k_cache = getattr(kv_cache, "key_cache", None)
-    if k_cache is None:
-        k_cache = getattr(kv_cache, "_key_cache", None)
-
-    v_cache = getattr(kv_cache, "value_cache", None)
-    if v_cache is None:
-        v_cache = getattr(kv_cache, "_value_cache", None)
-
-    if k_cache is not None and v_cache is not None:
-        for layer_idx in range(len(k_cache)):
-            k_state = k_cache[layer_idx]
-            v_state = v_cache[layer_idx]
-
-            if k_state is not None and v_state is not None and isinstance(k_state, torch.Tensor):
-                base_k = k_state[..., :base_seq_len, :]
-                base_v = v_state[..., :base_seq_len, :]
-                path_k = k_state[..., path_indices, :]
-                path_v = v_state[..., path_indices, :]
-
-                k_cache[layer_idx] = torch.cat([base_k, path_k], dim=-2)
-                v_cache[layer_idx] = torch.cat([base_v, path_v], dim=-2)
-
-        if hasattr(kv_cache, "_seen_tokens"):
-            kv_cache._seen_tokens = base_seq_len + len(accepted_idxs)
-        return kv_cache
-
-    if isinstance(kv_cache, (tuple, list)):
-        updated_kv_cache = []
+    # Fallback manual crop if tuple
+    if isinstance(kv_cache, tuple):
+        cropped = []
         for layer_kv in kv_cache:
-            if not isinstance(layer_kv, (tuple, list, torch.Tensor)):
-                updated_kv_cache.append(layer_kv)
-                continue
-            if isinstance(layer_kv, torch.Tensor):
-                new_state = torch.cat([layer_kv[..., :base_seq_len], layer_kv[..., path_indices]], dim=-1)
-                updated_kv_cache.append(new_state)
-            elif len(layer_kv) >= 2:
-                key_state, value_states = layer_kv[0], layer_kv[1]
-                if isinstance(key_state, torch.Tensor) and isinstance(value_states, torch.Tensor):
-                    new_keys = torch.cat([key_state[..., :base_seq_len, :], key_state[..., path_indices, :]], dim=-2)
-                    new_values = torch.cat([value_states[..., :base_seq_len, :], value_states[..., path_indices, :]], dim=-2)
-                    updated_kv_cache.append((new_keys, new_values))
-                else:
-                    updated_kv_cache.append(layer_kv)
+            if isinstance(layer_kv, tuple) and len(layer_kv) >= 2:
+                k, v = layer_kv[0], layer_kv[1]
+                cropped.append((k[..., :base_seq_len, :], v[..., :base_seq_len, :]))
             else:
-                updated_kv_cache.append(layer_kv)
-        return tuple(updated_kv_cache)
+                cropped.append(layer_kv)
+        return tuple(cropped)
 
     return kv_cache
 
@@ -370,6 +333,8 @@ def spec_decode_eagle(
             tree_choices_arr = [1, 8, 2]
         elif tc_lower in ["shallow 2", "shallow_2", "shallow-2", "shallow2"]:
             tree_choices_arr = [1, 12]
+        elif tc_lower == "linear":
+            tree_choices_arr = [1, 1, 1, 1]
         else:
             raise ValueError(f"{tree_choices} is not a supported tree option.")
     else:
