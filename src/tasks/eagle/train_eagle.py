@@ -422,7 +422,7 @@ def audit_speculative_correctness(
     eval_dataloader,
     device="cuda",
     max_samples=50,
-    tree_choices="shallow_1",
+    tree_choices="conservative",
     repetition_penalty=1.0
 ):
     target_model.eval()
@@ -443,7 +443,6 @@ def audit_speculative_correctness(
                 if total_samples >= max_samples:
                     break
 
-                # Correctly derive prompt length from label_mask instead of hardcoding [:5]
                 item_label_mask = label_mask[i]
                 supervised_indices = (item_label_mask == 1.0).nonzero(as_tuple=True)[0]
                 if len(supervised_indices) == 0:
@@ -456,17 +455,16 @@ def audit_speculative_correctness(
                 if max_new_tokens <= 0:
                     max_new_tokens = 64
 
-                # Standard target generation with matching decoding settings
                 target_out = target_model.generate(
                     prompt,
                     max_new_tokens=max_new_tokens,
                     do_sample=False,
-                    repetition_penalty=repetition_penalty,
+                    repetition_penalty=1.0,
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id
                 )
 
-                # Speculative generation with matching tree choices & penalty
+                # Speculative generation with penalty disabled[cite: 23, 24]
                 spec_out, _ = spec_decode_eagle(
                     target_model=target_model,
                     eagle_module=eagle_module,
@@ -475,7 +473,7 @@ def audit_speculative_correctness(
                     mode="greedy",
                     max_new_tokens=max_new_tokens,
                     tree_choices=tree_choices,
-                    repetition_penalty=repetition_penalty,
+                    repetition_penalty=1.0,
                     device=device
                 )
 
@@ -497,9 +495,7 @@ def audit_speculative_correctness(
                 break
 
     agreement_rate = exact_matches / total_samples if total_samples > 0 else 0.0
-    print(f"\nCorrectness Audit Result: {exact_matches}/{total_samples} exact matches ({agreement_rate * 100:.1f}%)")
-    if wandb.run is not None:
-        wandb.log({"eval/correctness_agreement_rate": agreement_rate})
+    print(f"\nCorrectness Audit Result: {exact_matches}/{total_samples} exact matches ({agreement_rate * 100:.1f}%)[cite: 23]")
     return agreement_rate
 
 

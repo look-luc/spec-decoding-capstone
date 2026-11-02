@@ -323,6 +323,8 @@ def spec_decode_eagle(
             tree_choices_arr = [1, 8, 4, 2]
         elif tc_lower == "custom":
             tree_choices_arr = [1, 4, 2, 3]
+        elif tc_lower in ["customlinear", "custom-linear", "custom_linear"]:
+            tree_choices_arr = [1, 3, 1, 1]
         elif tc_lower == "conservative":
             tree_choices_arr = [1, 3, 2, 1]
         elif tc_lower in ["balance_2", "balance-2", "balance 2"]:
@@ -335,6 +337,10 @@ def spec_decode_eagle(
             tree_choices_arr = [1, 12]
         elif tc_lower == "linear":
             tree_choices_arr = [1, 1, 1, 1]
+        elif tc_lower in ["hybrid1", "hybrid_1", "hybrid-1"]:
+            tree_choices_arr = [1, 3, 1, 1]
+        elif tc_lower in ["hybrid2", "hybrid_2", "hybrid-2"]:
+            tree_choices_arr = [1, 2, 2, 1]
         else:
             raise ValueError(f"{tree_choices} is not a supported tree option.")
     else:
@@ -396,9 +402,9 @@ def spec_decode_eagle(
         cur_gen_idx += 1
 
         while cur_gen_idx < generated_tokens.size(-1):
-            if cur_gen_idx - prompt_len > 10:
-                recent_tokens = generated_tokens[0, cur_gen_idx-6:cur_gen_idx].tolist()
-                if len(recent_tokens) >= 6 and recent_tokens[:3] == recent_tokens[3:]:
+            if cur_gen_idx - prompt_len > 64:
+                recent_tokens = generated_tokens[0, cur_gen_idx-16:cur_gen_idx].tolist()
+                if len(recent_tokens) >= 16 and recent_tokens[:8] == recent_tokens[8:]:
                     generated_tokens = generated_tokens[:, :cur_gen_idx]
                     termination_reason = "degenerate_loop"
                     break

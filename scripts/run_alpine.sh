@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --partition=artxpro6000
 #SBATCH --qos=gpu-normal
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:rtx_pro_6000_2g.48gb:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
