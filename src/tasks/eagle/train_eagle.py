@@ -1,11 +1,13 @@
 import logging
 import math
 import os
+import random
 import time
 from dataclasses import asdict
 from typing import Any
 
 import bitsandbytes as bnb
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -21,6 +23,14 @@ from src.spec_decode_eagle import spec_decode_eagle
 
 logger = logging.getLogger(__name__)
 
+def set_seed(seed: int = 42):
+    """Enforces full determinism across Python, NumPy, and PyTorch."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def compute_eagle_loss(
     eagle_module: nn.Module,
@@ -197,6 +207,12 @@ def log_speculative_metrics(metrics: dict, step: int = None, use_wandb: bool = T
 
 
 def run_eagle_training(config, base_model, eagle_module, tokenizer):
+    run_seed = getattr(config, "story_seed", 42)
+    if run_seed is None:
+        run_seed = 42
+    set_seed(run_seed)
+    logger.info(f"Initialized training with deterministic seed: {run_seed}")
+
     device = next(eagle_module.parameters()).device
     os.makedirs(config.output_dir, exist_ok=True)
 
