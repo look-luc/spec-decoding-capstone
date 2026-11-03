@@ -91,13 +91,10 @@ def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
     if kv_cache is None:
         return None
 
-    # If using HuggingFace DynamicCache
     if hasattr(kv_cache, "crop"):
-        # Truncate cache back to valid base sequence length
         kv_cache.crop(base_seq_len)
         return kv_cache
 
-    # Fallback manual crop if tuple
     if isinstance(kv_cache, tuple):
         cropped = []
         for layer_kv in kv_cache:
@@ -131,7 +128,6 @@ def build_eagle_tree_attn(tree_nodes, base_seq_len, device):
     num_nodes = len(tree_nodes)
     total_len = base_seq_len + num_nodes
 
-    # Use -float("inf") to guarantee strict masking in FP16/BF16
     attn_mask = torch.full((num_nodes, total_len), -float("inf"), dtype=torch.float32, device=device)
     pos_ids = torch.zeros(num_nodes, dtype=torch.long, device=device)
 
@@ -304,7 +300,7 @@ def spec_decode_eagle(
     top_p: float = 0.0,
     repetition_penalty: float = 1.0,
     repetition_penalty_window: int = 16,
-    score_threshold: float = 0.01,
+    score_threshold: float = 0.02,
     eos_token_id: int | None = None,
     device=None,
     track_iterations: bool = False
@@ -329,6 +325,8 @@ def spec_decode_eagle(
             tree_choices_arr = [1, 3, 2, 1]
         elif tc_lower in ["balance_2", "balance-2", "balance 2"]:
             tree_choices_arr = [1, 5, 2, 1]
+        elif tc_lower in ["balance_3", "balance-3", "balance 3"]:
+            tree_choices_arr = [1, 5, 2, 1]
         elif tc_lower in ["balance_1", "balance-1", "balance 1"]:
             tree_choices_arr = [1, 4, 2, 1]
         elif tc_lower in ["shallow 1", "shallow_1", "shallow-1", "shallow1"]:
@@ -341,6 +339,10 @@ def spec_decode_eagle(
             tree_choices_arr = [1, 6, 1, 1]
         elif tc_lower in ["wide_shallow_b", "wide-shallow-b", "wide shallow b"]:
             tree_choices_arr = [1, 4, 2]
+        elif tc_lower in ["wide_2tier", "wide2tier"]:
+            tree_choices_arr = [1, 6]
+        elif tc_lower in ["shallow_3tier", "shallow3tier"]:
+            tree_choices_arr = [1, 4, 1]
         elif tc_lower in ["hybrid1", "hybrid_1", "hybrid-1"]:
             tree_choices_arr = [1, 3, 1, 1]
         elif tc_lower in ["hybrid2", "hybrid_2", "hybrid-2"]:
@@ -500,6 +502,10 @@ def spec_decode_eagle(
                     child_node = path[step + 1]
 
                     pred_token = select_index(target_logprobs[:, parent_node.index, :])
+
+                    target_greedy = target_raw_logits[:, parent_node.index, :].argmax(dim=-1)
+                    if child_node.token_id != target_greedy:
+                        pass
 
                     if pred_token == child_node.token_id:
                         accepted_in_paths.append(child_node)
