@@ -88,7 +88,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
         raise NotImplementedError(f"Unknown task: {config.task}")
 
     # 1. Train Draft Checkpoint FIRST (Before holding target model in GPU VRAM)
-    checkpoint_path = getattr(config, "output_dir", None)
+    checkpoint_path = getattr(config, "draft_model", None)
     model_name = config.target_model if config.target_model is not None else getattr(config, "base_model", None)
 
     if config.draft_model_type in ("medusa", "madusa"):
@@ -288,7 +288,9 @@ def setup_wandb(config: ExperimentConfig | MedusaConfig | EagleConfig):
     if is_medusa:
         name = f"{config.language_code}_{draft_short}_h{num_heads}_medusa"
     elif is_eagle:
-        name = f"{config.language_code}_{draft_short}_tree{tree_choices}_eagle"
+        name = f'''
+        {config.draft_model_type.capitalize()} {config.decoding_mode} {config.tree_choices.strip('_').replace('_', ' ') if type(config.tree_choices) is str else config.tree_choices} {config.max_steps}
+        '''
     elif is_spec:
         name = f"{config.language_code}_{draft_short}_g{config.gamma}"
     else:
