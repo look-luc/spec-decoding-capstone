@@ -92,8 +92,13 @@ def compute_eagle_loss(
         ).reshape(shifted_greedy_targets.shape)
 
         combined_loss = ((1.0 - beta) * kl_loss) + (beta * ce_loss)
-        mask_sum = step_mask.sum().clamp(min=1)
-        loss = (combined_loss * step_mask).sum() / mask_sum
+
+        step_indices = torch.arange(seq_len, device=device).float().unsqueeze(0)
+        depth_weights = 1.0 + (0.2 * step_indices)
+        weighted_loss = combined_loss * step_mask * depth_weights
+
+        mask_sum = (step_mask * depth_weights).sum().clamp(min=1)
+        loss = weighted_loss.sum() / mask_sum
 
     return loss
 

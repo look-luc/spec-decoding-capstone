@@ -337,6 +337,10 @@ def spec_decode_eagle(
             tree_choices_arr = [1, 12]
         elif tc_lower == "linear":
             tree_choices_arr = [1, 1, 1, 1]
+        elif tc_lower in ["wide_shallow", "wide-shallow", "wide shallow"]:
+            tree_choices_arr = [1, 6, 1, 1]
+        elif tc_lower in ["wide_shallow_b", "wide-shallow-b", "wide shallow b"]:
+            tree_choices_arr = [1, 4, 2]
         elif tc_lower in ["hybrid1", "hybrid_1", "hybrid-1"]:
             tree_choices_arr = [1, 3, 1, 1]
         elif tc_lower in ["hybrid2", "hybrid_2", "hybrid-2"]:

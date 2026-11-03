@@ -88,7 +88,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
         raise NotImplementedError(f"Unknown task: {config.task}")
 
     # 1. Train Draft Checkpoint FIRST (Before holding target model in GPU VRAM)
-    checkpoint_path = getattr(config, "draft_model", None)
+    checkpoint_path = getattr(config, "output_dir", None)
     model_name = config.target_model if config.target_model is not None else getattr(config, "base_model", None)
 
     if config.draft_model_type in ("medusa", "madusa"):
@@ -114,13 +114,16 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
                 num_heads=config.num_heads
             ).to(config.device)
 
-            run_eagle_training(
-                config=config,
-                base_model=temp_target,
-                eagle_module=temp_eagle,
-                tokenizer=temp_tokenizer
-            )
-            checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+            if Path(os.path.join(config.output_dir, "eagle_module_best.pt")).exists():
+                checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+            else:
+                run_eagle_training(
+                    config=config,
+                    base_model=temp_target,
+                    eagle_module=temp_eagle,
+                    tokenizer=temp_tokenizer
+                )
+                checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
             config.draft_model = checkpoint_path
 
             del temp_target, temp_eagle, temp_tokenizer
