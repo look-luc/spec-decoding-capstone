@@ -38,8 +38,8 @@ def compute_eagle_loss(
     batch: dict,
     device: torch.device = None,
     top_k: int = 40,
-    beta: float = 0.3,          # Lower beta to lean more into soft KL distillation
-    temperature: float = 1.0    # Softens the target distribution
+    beta: float = 0.1,
+    temperature: float = 1.0
 ) -> torch.Tensor:
     if device is None:
         device = next(base_model.parameters()).device
@@ -60,7 +60,6 @@ def compute_eagle_loss(
 
             greedy_targets = torch.argmax(base_logits, dim=-1)
 
-            # Apply temperature scaling to target logits
             scaled_base_logits = base_logits.float() / temperature
             target_log_softmax = torch.nn.functional.log_softmax(scaled_base_logits, dim=-1)
             target_logprobs, target_indices = torch.topk(target_log_softmax, k=top_k, dim=-1)
@@ -76,13 +75,11 @@ def compute_eagle_loss(
         shifted_greedy_targets = greedy_targets[:, 1 : 1 + seq_len]
         step_mask = label_mask[:, :seq_len]
 
-        # Apply temperature scaling to student logits
         scaled_pred_logits = pred_logits.float() / temperature
         target_probs = torch.softmax(shifted_target_logprobs, dim=-1)
         student_logprobs = torch.nn.functional.log_softmax(scaled_pred_logits, dim=-1)
 
         gathered_student_logprobs = student_logprobs.gather(dim=-1, index=matched_target_indices)
-        # Scale KL loss by T^2 to maintain gradient magnitude
         kl_loss = -(target_probs * gathered_student_logprobs).sum(dim=-1) * (temperature ** 2)
 
         ce_loss = torch.nn.functional.cross_entropy(
@@ -93,11 +90,10 @@ def compute_eagle_loss(
 
         combined_loss = ((1.0 - beta) * kl_loss) + (beta * ce_loss)
 
-        step_indices = torch.arange(seq_len, device=device).float().unsqueeze(0)
-        depth_weights = 1.0 + (0.2 * step_indices)
-        weighted_loss = combined_loss * step_mask * depth_weights
+        # Removed artificial depth penalty scaling (flat weights = 1.0) to prevent early-step degradation
+        weighted_loss = combined_loss * step_mask
 
-        mask_sum = (step_mask * depth_weights).sum().clamp(min=1)
+        mask_sum = step_mask.sum().clamp(min=1)
         loss = weighted_loss.sum() / mask_sum
 
     return loss

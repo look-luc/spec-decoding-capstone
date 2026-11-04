@@ -3,10 +3,11 @@ import torch.nn as nn
 
 
 class EagleModule(nn.Module):
-    def __init__(self, vocab_size: int, embed_dim: int, hidden_dim: int, num_heads: int = 8, num_layers: int = 2):
+    def __init__(self, vocab_size: int, embed_dim: int, hidden_dim: int, num_heads: int = 8, num_layers: int = 4):
         super().__init__()
         self.embeddings = nn.Embedding(vocab_size, embed_dim)
         self.fc_fusion = nn.Linear(embed_dim + hidden_dim, hidden_dim)
+        self.norm = nn.LayerNorm(hidden_dim)
 
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=hidden_dim,
@@ -27,7 +28,8 @@ class EagleModule(nn.Module):
     ):
         token_emb = self.get_embedding(token_id)
         fused = torch.cat([token_emb, hidden_state], dim=-1)
-        projected = self.fc_fusion(fused)
+        # Residual connection + LayerNorm to stabilize deep multi-layer flow
+        projected = self.norm(self.fc_fusion(fused) + hidden_state)
 
         seq_len = projected.size(1)
         tgt_mask = None
