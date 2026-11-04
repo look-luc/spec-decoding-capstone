@@ -336,9 +336,9 @@ def spec_decode_eagle(
         elif tc_lower == "linear":
             tree_choices_arr = [1, 1, 1, 1]
         elif tc_lower in ["wide_shallow", "wide-shallow", "wide shallow"]:
-            tree_choices_arr = [1, 6, 1, 1]
+            tree_choices_arr = [1, 4, 1, 1]
         elif tc_lower in ["wide_shallow_b", "wide-shallow-b", "wide shallow b"]:
-            tree_choices_arr = [1, 4, 2]
+            tree_choices_arr = [1, 5, 1]
         elif tc_lower in ["wide_2tier", "wide2tier"]:
             tree_choices_arr = [1, 6]
         elif tc_lower in ["shallow_3tier", "shallow3tier"]:
@@ -364,7 +364,7 @@ def spec_decode_eagle(
         ctx = generated_tokens[:, max(0, confirmed_len - repetition_penalty_window):confirmed_len]
         return apply_repetition_penalty(logits, ctx, repetition_penalty)
 
-    stop_token_ids = torch.tensor(list(get_stop_token_ids(tokenizer, eos_token_id)), device=device)
+    stop_token_ids = get_stop_token_ids(tokenizer, eos_token_id)
     input_ids = input_ids.to(device)
 
     generated_tokens = torch.cat(
@@ -503,10 +503,6 @@ def spec_decode_eagle(
 
                     pred_token = select_index(target_logprobs[:, parent_node.index, :])
 
-                    target_greedy = target_raw_logits[:, parent_node.index, :].argmax(dim=-1)
-                    if child_node.token_id != target_greedy:
-                        pass
-
                     if pred_token == child_node.token_id:
                         accepted_in_paths.append(child_node)
                     else:
@@ -524,11 +520,22 @@ def spec_decode_eagle(
                 if 1 <= node.depth <= max_depth:
                     per_position_accept_count[node.depth - 1] += 1
 
+            # --- FIXED SEQUENTIAL STOP-TOKEN TERMINATION LOGIC ---
             accepted_tokens = [node.token_id for node in best_path]
             accepted_tensor = torch.tensor(accepted_tokens, dtype=torch.int64, device=device).view(-1)
             bonus_tensor = bonus_token.view(-1)
+            candidate_additions = torch.cat([accepted_tensor, bonus_tensor], dim=0)
 
-            tokens_to_add = torch.cat([accepted_tensor, bonus_tensor], dim=0).unsqueeze(0)
+            eos_found = False
+            valid_tokens = []
+            for tok in candidate_additions:
+                tid = tok.item() if isinstance(tok, torch.Tensor) else tok
+                valid_tokens.append(tid)
+                if tid in stop_token_ids:
+                    eos_found = True
+                    break
+
+            tokens_to_add = torch.tensor(valid_tokens, dtype=torch.int64, device=device).unsqueeze(0)
             num_added = tokens_to_add.size(-1)
 
             new_gen_idx = cur_gen_idx + num_added
@@ -554,7 +561,7 @@ def spec_decode_eagle(
             )
             last_hidden = new_last_hidden
 
-            if torch.isin(tokens_to_add, stop_token_ids).any():
+            if eos_found:
                 generated_tokens = generated_tokens[:, :cur_gen_idx]
                 termination_reason = "eos"
                 break

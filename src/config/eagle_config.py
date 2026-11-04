@@ -18,12 +18,12 @@ class EagleConfig:
     decoding_mode: Literal["greedy", "sample"] = "greedy"
     tree_choices: str|list[int] = "custom"
 
-    score_threshold: float = 0.005
+    score_threshold: float = 0.02
     distillation_beta: float = 0.3
     top_k: int = 0
     top_p: float = 0.0
 
-    repetition_penalty: float = 1.1
+    repetition_penalty: float = 1.0
     repetition_penalty_window: int = 16
 
     gamma: int = 5

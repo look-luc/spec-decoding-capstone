@@ -39,7 +39,7 @@ def compute_eagle_loss(
     device: torch.device = None,
     top_k: int = 40,
     beta: float = 0.3,          # Lower beta to lean more into soft KL distillation
-    temperature: float = 2.0    # Softens the target distribution
+    temperature: float = 1.0    # Softens the target distribution
 ) -> torch.Tensor:
     if device is None:
         device = next(base_model.parameters()).device
