@@ -164,6 +164,30 @@ def create_node(index, parent, token_id, hidden_state, depth, log_score):
     return Node(index, parent, token_id, hidden_state, depth, log_score)
 
 
+def parse_tree_choices(tree_choices: str | list[int]) -> list[int]:
+    """Robustly parses tree choices string or returns list directly[cite: 7]."""
+    if isinstance(tree_choices, list):
+        return tree_choices
+
+    tc_lower = tree_choices.lower().strip()
+    presets = {
+        "eagle_1": [1, 4, 2, 2],
+        "eagle_2": [1, 8, 4, 2],
+        "custom": [1, 4, 2, 3],
+        "customlinear": [1, 3, 1, 1],
+        "conservative": [1, 3, 2, 1],
+        "balance_1": [1, 4, 2, 1],
+        "balance_2": [1, 5, 2, 1],
+        "linear": [1, 1, 1, 1],
+        "wide_shallow": [1, 4, 1, 1],
+        "wide_shallow_b": [1, 5, 1],
+    }
+    if tc_lower in presets:
+        return presets[tc_lower]
+    # Fallback default
+    return [1, 4, 2, 3]
+
+
 def eagle_draft_tree_expansion(
     eagle_module,
     root_hidden,
@@ -311,46 +335,7 @@ def spec_decode_eagle(
     if device is None:
         device = next(target_model.parameters()).device
 
-    if isinstance(tree_choices, str):
-        tc_lower = tree_choices.lower()
-        if tc_lower in ["eagle_1", "eagle-1", "eagle 1"]:
-            tree_choices_arr = [1, 4, 2, 2]
-        elif tc_lower in ["eagle_2", "eagle-2", "eagle 2"]:
-            tree_choices_arr = [1, 8, 4, 2]
-        elif tc_lower == "custom":
-            tree_choices_arr = [1, 4, 2, 3]
-        elif tc_lower in ["customlinear", "custom-linear", "custom_linear"]:
-            tree_choices_arr = [1, 3, 1, 1]
-        elif tc_lower == "conservative":
-            tree_choices_arr = [1, 3, 2, 1]
-        elif tc_lower in ["balance_2", "balance-2", "balance 2"]:
-            tree_choices_arr = [1, 5, 2, 1]
-        elif tc_lower in ["balance_3", "balance-3", "balance 3"]:
-            tree_choices_arr = [1, 5, 2, 1]
-        elif tc_lower in ["balance_1", "balance-1", "balance 1"]:
-            tree_choices_arr = [1, 4, 2, 1]
-        elif tc_lower in ["shallow 1", "shallow_1", "shallow-1", "shallow1"]:
-            tree_choices_arr = [1, 8, 2]
-        elif tc_lower in ["shallow 2", "shallow_2", "shallow-2", "shallow2"]:
-            tree_choices_arr = [1, 12]
-        elif tc_lower == "linear":
-            tree_choices_arr = [1, 1, 1, 1]
-        elif tc_lower in ["wide_shallow", "wide-shallow", "wide shallow"]:
-            tree_choices_arr = [1, 4, 1, 1]
-        elif tc_lower in ["wide_shallow_b", "wide-shallow-b", "wide shallow b"]:
-            tree_choices_arr = [1, 5, 1]
-        elif tc_lower in ["wide_2tier", "wide2tier"]:
-            tree_choices_arr = [1, 6]
-        elif tc_lower in ["shallow_3tier", "shallow3tier"]:
-            tree_choices_arr = [1, 4, 1]
-        elif tc_lower in ["hybrid1", "hybrid_1", "hybrid-1"]:
-            tree_choices_arr = [1, 3, 1, 1]
-        elif tc_lower in ["hybrid2", "hybrid_2", "hybrid-2"]:
-            tree_choices_arr = [1, 2, 2, 1]
-        else:
-            raise ValueError(f"{tree_choices} is not a supported tree option.")
-    else:
-        tree_choices_arr = tree_choices
+    tree_choices_arr = parse_tree_choices(tree_choices)
 
     def apply_filters(logprobs: torch.Tensor) -> torch.Tensor:
         return filter_logprobs(logprobs, top_k=top_k, top_p=top_p)
@@ -408,13 +393,6 @@ def spec_decode_eagle(
         cur_gen_idx += 1
 
         while cur_gen_idx < generated_tokens.size(-1):
-            if cur_gen_idx - prompt_len > 64:
-                recent_tokens = generated_tokens[0, cur_gen_idx-16:cur_gen_idx].tolist()
-                if len(recent_tokens) >= 16 and recent_tokens[:8] == recent_tokens[8:]:
-                    generated_tokens = generated_tokens[:, :cur_gen_idx]
-                    termination_reason = "degenerate_loop"
-                    break
-
             num_iterations += 1
             curr_token = generated_tokens[:, cur_gen_idx - 1]
 
@@ -516,11 +494,14 @@ def spec_decode_eagle(
                     bonus_token = select_index(target_logprobs[:, last_accepted_node.index, :])
                     new_last_hidden = verifier_hiddens[:, last_accepted_node.index, :]
 
+            # --- Diagnostic Trace for Iteration Mismatches ---
+            if track_iterations and num_iterations <= 5:
+                print(f"[Iter {num_iterations}] Proposed Nodes: {len(tree_nodes)} | Accepted Depth: {best_accept_count}")
+
             for node in best_path:
                 if 1 <= node.depth <= max_depth:
                     per_position_accept_count[node.depth - 1] += 1
 
-            # --- FIXED SEQUENTIAL STOP-TOKEN TERMINATION LOGIC ---
             accepted_tokens = [node.token_id for node in best_path]
             accepted_tensor = torch.tensor(accepted_tokens, dtype=torch.int64, device=device).view(-1)
             bonus_tensor = bonus_token.view(-1)
