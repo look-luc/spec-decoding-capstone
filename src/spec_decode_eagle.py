@@ -87,7 +87,7 @@ def get_kv_cache_length(past_key_values) -> int:
             return first_item[0].size(2) if len(first_item[0].shape) == 4 else first_item[0].size(-1)
     return 0
 
-def crop_align_eagle_kv_cache(kv_cache, accepted_path_nodes, base_seq_len):
+def crop_align_eagle_kv_cache(kv_cache, base_seq_len):
     if kv_cache is None:
         return None
 
@@ -165,7 +165,6 @@ def create_node(index, parent, token_id, hidden_state, depth, log_score):
 
 
 def parse_tree_choices(tree_choices: str | list[int]) -> list[int]:
-    """Robustly parses tree choices string or returns list directly[cite: 7]."""
     if isinstance(tree_choices, list):
         return tree_choices
 
@@ -184,7 +183,6 @@ def parse_tree_choices(tree_choices: str | list[int]) -> list[int]:
     }
     if tc_lower in presets:
         return presets[tc_lower]
-    # Fallback default
     return [1, 4, 2, 3]
 
 
@@ -200,7 +198,7 @@ def eagle_draft_tree_expansion(
     generated_tokens,
     cur_gen_idx,
     mode,
-    score_threshold: float = 0.005
+    score_threshold: float = 0.02
 ):
     tree_nodes = []
     log_threshold = math.log(max(score_threshold, 1e-12))
@@ -249,7 +247,7 @@ def eagle_draft_tree_expansion(
 
         token_embs = eagle_module.get_embedding(path_tokens_tensor)
         fused_feat = torch.cat([token_embs, path_hiddens_tensor], dim=-1)
-        projected = eagle_module.fc_fusion(fused_feat)
+        projected = eagle_module.norm(eagle_module.fc_fusion(fused_feat) + path_hiddens_tensor)
 
         seq_len = projected.size(1)
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=device) if seq_len > 1 else None
@@ -471,7 +469,6 @@ def spec_decode_eagle(
             best_path = []
             best_accept_count = -1
             bonus_token = None
-            new_last_hidden = None
 
             for path in candidate_paths:
                 accepted_in_paths = []
@@ -492,9 +489,7 @@ def spec_decode_eagle(
 
                     last_accepted_node = accepted_in_paths[-1] if len(accepted_in_paths) else path[0]
                     bonus_token = select_index(target_logprobs[:, last_accepted_node.index, :])
-                    new_last_hidden = verifier_hiddens[:, last_accepted_node.index, :]
 
-            # --- Diagnostic Trace for Iteration Mismatches ---
             if track_iterations and num_iterations <= 5:
                 print(f"[Iter {num_iterations}] Proposed Nodes: {len(tree_nodes)} | Accepted Depth: {best_accept_count}")
 
@@ -535,12 +530,19 @@ def spec_decode_eagle(
             total_matched_tokens += best_accept_count
             total_draft_tokens += len(tree_nodes) - 1
 
-            target_kv_cache = crop_align_eagle_kv_cache(
-                target_out.past_key_values,
-                best_path,
-                base_seq_len
-            )
-            last_hidden = new_last_hidden
+            # Robust KV cache synchronization: Crop back to base_seq_len, then feed accepted tokens
+            target_kv_cache = crop_align_eagle_kv_cache(target_out.past_key_values, base_seq_len)
+            if tokens_to_add.size(1) > 0:
+                cache_update_out = target_model(
+                    input_ids=tokens_to_add,
+                    past_key_values=target_kv_cache,
+                    use_cache=True,
+                    output_hidden_states=True
+                )
+                target_kv_cache = cache_update_out.past_key_values
+                last_hidden = cache_update_out.hidden_states[-1][:, -1, :]
+            else:
+                last_hidden = target_out.hidden_states[-1][:, 0, :]
 
             if eos_found:
                 generated_tokens = generated_tokens[:, :cur_gen_idx]
