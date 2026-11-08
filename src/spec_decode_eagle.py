@@ -4,7 +4,6 @@ from typing import Literal, cast
 
 import torch
 import torch.nn as nn
-from transformers.cache_utils import DynamicCache
 
 
 def get_stop_token_ids(tokenizer, eos_token_id=None):
@@ -530,19 +529,13 @@ def spec_decode_eagle(
             total_matched_tokens += best_accept_count
             total_draft_tokens += len(tree_nodes) - 1
 
-            # Robust KV cache synchronization: Crop back to base_seq_len, then feed accepted tokens
-            target_kv_cache = crop_align_eagle_kv_cache(target_out.past_key_values, base_seq_len)
-            if tokens_to_add.size(1) > 0:
-                cache_update_out = target_model(
-                    input_ids=tokens_to_add,
-                    past_key_values=target_kv_cache,
-                    use_cache=True,
-                    output_hidden_states=True
-                )
-                target_kv_cache = cache_update_out.past_key_values
-                last_hidden = cache_update_out.hidden_states[-1][:, -1, :]
+            target_kv_cache = target_out.past_key_values
+
+            if len(best_path) > 0:
+                last_accepted_node = best_path[-1]
+                last_hidden = verifier_hiddens[:, last_accepted_node.index, :]
             else:
-                last_hidden = target_out.hidden_states[-1][:, 0, :]
+                last_hidden = verifier_hiddens[:, 0, :]
 
             if eos_found:
                 generated_tokens = generated_tokens[:, :cur_gen_idx]

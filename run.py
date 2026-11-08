@@ -14,11 +14,15 @@ from typing import Mapping
 
 import torch
 import wandb
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.models.eagle import EagleModule
 from src.models.madusa import madusa
-from src.tasks.eagle.train_eagle import run_eagle_training
+from src.tasks.eagle.train_eagle import (
+    audit_speculative_correctness,
+    run_eagle_training,
+)
 from src.tasks.medusa import train_heads
 
 '''
@@ -142,9 +146,9 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
     # 3. Load Data
     logger.info(f"Loading test split for {config.language_code}...")
     dataset, language = load_data(config, target_tokenizer)
-    dataset = dataset['test']
-    logger.info(f"Loaded {len(dataset)} examples")
-    assert dataset and len(dataset) > 0
+    eval_dataset = dataset['test']
+    logger.info(f"Loaded {len(eval_dataset)} examples")
+    assert eval_dataset and len(eval_dataset) > 0
 
     # 4. Instantiate Draft Model
     if config.draft_model_type == "none":
@@ -197,11 +201,49 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
     else:
         raise ValueError(f"Unsupported draft_model_type: {config.draft_model_type}")
 
-    # 5. Decoding loop
+    # 5. Decoding loop & Correctness Audit
+    # Construct a temporary DataLoader for the audit function
+    pad_id = target_tokenizer.pad_token_id if target_tokenizer.pad_token_id is not None else (target_tokenizer.eos_token_id or 0)
+    def audit_collate_fn(batch):
+        token_lists = []
+        for r in batch:
+            ids = target_tokenizer.encode(r.get('source', next(iter(r.values()))), add_special_tokens=True)
+            if len(ids) > config.max_seq_len:
+                ids = ids[:config.max_seq_len]
+            if len(ids) >= 2:
+                token_lists.append(ids)
+        if not token_lists:
+            return None
+        seq_len = max(len(ids) for ids in token_lists)
+        input_ids = torch.full((len(token_lists), seq_len), pad_id, dtype=torch.long)
+        attention_mask = torch.zeros((len(token_lists), seq_len), dtype=torch.long)
+        label_mask = torch.zeros((len(token_lists), seq_len - 1), dtype=torch.float32)
+        for idx, ids in enumerate(token_lists):
+            item_len = len(ids)
+            input_ids[idx][:item_len] = torch.as_tensor(ids)
+            attention_mask[idx][:item_len] = 1
+            label_mask[idx][:item_len - 1] = 1.0
+        return {"input_ids": input_ids, "attention_mask": attention_mask, "label_mask": label_mask}
+
+    audit_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False, collate_fn=audit_collate_fn)
+
+    if isinstance(draft_model, EagleModule):
+        logger.info("Running correctness audit before benchmark...")
+        audit_speculative_correctness(
+            target_model=target_model,
+            eagle_module=draft_model,
+            tokenizer=target_tokenizer,
+            eval_dataloader=audit_loader,
+            device=device,
+            max_samples=20,
+            tree_choices=config.tree_choices,
+            repetition_penalty=config.repetition_penalty
+        )
+
     # Warm up on the first couple of prompts (outputs discarded) so one-off CUDA
     # initialisation doesn't inflate the timings of the first logged sentences.
     if device.type == "cuda":
-        for row in dataset.select(range(min(2, len(dataset)))):
+        for row in eval_dataset.select(range(min(2, len(eval_dataset)))):
             assert isinstance(row, Mapping)
             prompt = create_prompt(config.task, language, row['source'])
             generate_output(
@@ -215,7 +257,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
 
     predictions = []
     all_metrics: list[dict] = []
-    for row_idx, row in enumerate(tqdm(dataset, desc="Decoding")):
+    for row_idx, row in enumerate(tqdm(eval_dataset, desc="Decoding")):
         assert isinstance(row, Mapping)
         prompt = create_prompt(config.task, language, row['source'])
         inputs = create_inputs(prompt, target_tokenizer, device)
@@ -254,10 +296,10 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
     for key in list(wandb.summary.keys()):
         if key.startswith("sentence/") or key == "sentence_idx":
             del wandb.summary[key]
-    log_token_flow([row['source'] for row in dataset], all_metrics, config)  # type:ignore
+    log_token_flow([row['source'] for row in eval_dataset], all_metrics, config)  # type:ignore
 
     # 8. Log evaluation metrics (skipped for tasks without references, e.g. story_gen)
-    eval_metrics = compute_eval_metrics([row['target'] for row in dataset], predictions)  # type:ignore
+    eval_metrics = compute_eval_metrics([row['target'] for row in eval_dataset], predictions)  # type:ignore
     if eval_metrics:
         wandb.summary.update(eval_metrics)
 
