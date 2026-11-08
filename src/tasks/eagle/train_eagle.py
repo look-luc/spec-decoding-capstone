@@ -440,7 +440,7 @@ def audit_speculative_correctness(
     device="cuda",
     max_samples=50,
     tree_choices="conservative",
-    repetition_penalty=1.0
+    repetition_penalty=1.1
 ):
     target_model.eval()
     eagle_module.eval()
@@ -476,7 +476,7 @@ def audit_speculative_correctness(
                     prompt,
                     max_new_tokens=max_new_tokens,
                     do_sample=False,
-                    repetition_penalty=1.0,
+                    repetition_penalty=repetition_penalty,
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id
                 )
@@ -490,7 +490,7 @@ def audit_speculative_correctness(
                     mode="greedy",
                     max_new_tokens=max_new_tokens,
                     tree_choices=tree_choices,
-                    repetition_penalty=1.0,
+                    repetition_penalty=repetition_penalty,
                     device=device
                 )
 
