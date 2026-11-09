@@ -17,6 +17,7 @@ import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from src.divergence_diagnose import run_divergence_audit
 from src.models.eagle import EagleModule
 from src.models.madusa import madusa
 from src.tasks.eagle.train_eagle import (
@@ -385,6 +386,9 @@ if __name__ == "__main__":
         "config", help="A config file (cfg, ini) with configuration parameters"
     )
     parser.add_argument(
+        "--diagnose", action='store_true', help="diagnose the decoding step"
+    )
+    parser.add_argument(
         "--overrides",
         "-o",
         help="Override config arguments, in the format `key1=value1 key2=value2`",
@@ -403,7 +407,10 @@ if __name__ == "__main__":
     )
     logger.info(f"Loaded {config_cls.__name__}:\n{pprint.pformat(config)}")
 
-    try:
-        run(config)
-    finally:
-        wandb.finish()
+    if args.diagnose:
+        run_divergence_audit(config)
+    else:
+        try:
+            run(config)
+        finally:
+            wandb.finish()
