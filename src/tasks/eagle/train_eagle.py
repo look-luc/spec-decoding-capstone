@@ -55,7 +55,7 @@ def compute_eagle_loss(
                 attention_mask=attention_mask,
                 output_hidden_states=True,
             )
-            base_hidden_states = base_outputs.hidden_states[-1]
+            base_hidden_states = base_outputs.hidden_states[-2]
             base_logits = base_outputs.logits
 
             greedy_targets = torch.argmax(base_logits, dim=-1)
@@ -257,12 +257,12 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
             if "token_ids" in r and r["token_ids"] is not None:
                 ids = r["token_ids"]
             elif "text" in r and r["text"] is not None:
-                ids = tokenizer.encode(r["text"], add_special_tokens=True)
+                ids = tokenizer.encode(r["text"], add_special_tokens=False)
             elif config.language_code in r and r[config.language_code] is not None:
-                ids = tokenizer.encode(r[config.language_code], add_special_tokens=True)
+                ids = tokenizer.encode(r[config.language_code], add_special_tokens=False)
             else:
                 string_val = next((v for k, v in r.items() if k != "origin" and isinstance(v, str)), None)
-                ids = tokenizer.encode(string_val, add_special_tokens=True) if string_val else []
+                ids = tokenizer.encode(string_val, add_special_tokens=False) if string_val else []
 
             # CRITICAL OOM FIX: Truncate overly long sequences
             if len(ids) > max_seq_len:

@@ -52,7 +52,8 @@ def run_divergence_audit(config):
         vocab_size=target_model.config.vocab_size,
         embed_dim=target_model.config.hidden_size,
         hidden_dim=target_model.config.hidden_size,
-        num_heads=8
+        num_heads=config.num_heads,
+        num_layers=config.num_layers
     ).to(device)
 
     state_dict = torch.load(checkpoint_path, map_location=device)

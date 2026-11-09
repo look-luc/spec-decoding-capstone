@@ -209,7 +209,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
     def audit_collate_fn(batch):
         token_lists = []
         for r in batch:
-            ids = target_tokenizer.encode(r.get('source', next(iter(r.values()))), add_special_tokens=True)
+            ids = target_tokenizer.encode(r.get('source', next(iter(r.values()))), add_special_tokens=False)
             if len(ids) > config.max_seq_len:
                 ids = ids[:config.max_seq_len]
             if len(ids) >= 2:

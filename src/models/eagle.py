@@ -6,6 +6,7 @@ class EagleModule(nn.Module):
     def __init__(self, vocab_size: int, embed_dim: int, hidden_dim: int, num_heads: int = 8, num_layers: int = 4):
         super().__init__()
         self.embeddings = nn.Embedding(vocab_size, embed_dim)
+        self.hidden_norm = nn.LayerNorm(hidden_dim) # Add normalization for hidden states
         self.fc_fusion = nn.Linear(embed_dim + hidden_dim, hidden_dim)
         self.norm = nn.LayerNorm(hidden_dim)
 
@@ -27,9 +28,9 @@ class EagleModule(nn.Module):
         **kwargs
     ):
         token_emb = self.get_embedding(token_id)
-        fused = torch.cat([token_emb, hidden_state], dim=-1)
-        # Residual connection + LayerNorm to stabilize deep multi-layer flow
-        projected = self.norm(self.fc_fusion(fused) + hidden_state)
+        normed_hidden = self.hidden_norm(hidden_state) # Normalize incoming hidden states
+        fused = torch.cat([token_emb, normed_hidden], dim=-1)
+        projected = self.norm(self.fc_fusion(fused) + normed_hidden)
 
         seq_len = projected.size(1)
         tgt_mask = None
