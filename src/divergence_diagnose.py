@@ -1,7 +1,6 @@
 from typing import Mapping
 
 import torch
-from tqdm import tqdm
 
 from src.data.create_inputs import (  # functions to create the prompts and inputs for draft models
     create_inputs,
@@ -9,18 +8,24 @@ from src.data.create_inputs import (  # functions to create the prompts and inpu
 )
 from src.models.eagle import EagleModule
 from src.spec_decode_eagle import spec_decode_eagle
-from src.tasks.translation import compute_eval_metrics, load_data
+from src.tasks.translation import load_data
 from src.utils import load_model
 
 
 def run_divergence_audit(config):
-    device = config.device
     model_name = config.target_model if config.target_model is not None else getattr(config, "base_model", None)
     checkpoint_path = "checkpoints/eagle_npi/eagle_module_best.pt"
 
     print(f"Loading tokenizer and target model: {model_name}...")
     target_model, tokenizer = load_model(str(model_name), device=config.device, draft_model_type=config.draft_model_type)
     target_model.eval()
+
+    # Resolve device safely here after model is loaded
+    device = config.device
+    if device is None:
+        device = next(target_model.parameters()).device
+    elif isinstance(device, str):
+        device = torch.device(device)
 
     print(f"Loading EAGLE module from: {checkpoint_path}...")
     draft_model = EagleModule(
@@ -41,7 +46,6 @@ def run_divergence_audit(config):
     assert isinstance(row, Mapping)
     prompt_text = create_prompt(config.task, language, row['source'])
     inputs = create_inputs(prompt_text, tokenizer, device)
-    inputs = tokenizer(prompt_text, return_tensors="pt").to(device)
     input_ids = inputs["input_ids"]
     max_new_tokens = config.max_new_tokens
     repetition_penalty = config.repetition_penalty

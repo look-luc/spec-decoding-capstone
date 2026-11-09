@@ -50,6 +50,7 @@ def extract_token_ids(tree_nodes, device=None):
         ids.append(tid)
     return torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0)
 
+
 def extract_all_leaf_paths(tree_nodes):
     leaf_paths = []
     for node in tree_nodes:
@@ -86,6 +87,7 @@ def get_kv_cache_length(past_key_values) -> int:
             return first_item[0].size(2) if len(first_item[0].shape) == 4 else first_item[0].size(-1)
     return 0
 
+
 def crop_align_eagle_kv_cache(kv_cache, base_seq_len):
     if kv_cache is None:
         return None
@@ -99,12 +101,19 @@ def crop_align_eagle_kv_cache(kv_cache, base_seq_len):
         for layer_kv in kv_cache:
             if isinstance(layer_kv, tuple) and len(layer_kv) >= 2:
                 k, v = layer_kv[0], layer_kv[1]
-                cropped.append((k[..., :base_seq_len, :], v[..., :base_seq_len, :]))
+                # Crop key/value tensors along the sequence dimension (typically dim=-2 or dim=2 depending on layout)
+                if k.ndim == 4:
+                    cropped.append((k[..., :base_seq_len, :], v[..., :base_seq_len, :]))
+                elif k.ndim == 3:
+                    cropped.append((k[..., :base_seq_len], v[..., :base_seq_len]))
+                else:
+                    cropped.append((k, v))
             else:
                 cropped.append(layer_kv)
         return tuple(cropped)
 
     return kv_cache
+
 
 def get_node_depth(node):
     depth = 0
@@ -113,6 +122,7 @@ def get_node_depth(node):
         depth += 1
         curr = curr.parent
     return depth
+
 
 def get_ancestor_tokens(node):
     tokens = []
@@ -331,6 +341,8 @@ def spec_decode_eagle(
 
     if device is None:
         device = next(target_model.parameters()).device
+    elif isinstance(device, str):
+        device = torch.device(device)
 
     tree_choices_arr = parse_tree_choices(tree_choices)
 
@@ -529,7 +541,10 @@ def spec_decode_eagle(
             total_matched_tokens += best_accept_count
             total_draft_tokens += len(tree_nodes) - 1
 
-            target_kv_cache = target_out.past_key_values
+            # --- CRITICAL FIX: Align and crop KV Cache to discard unaccepted tree nodes ---
+            # Compute the exact sequence length corresponding to all confirmed tokens so far
+            final_seq_len = base_seq_len + len(accepted_tokens) + 1
+            target_kv_cache = crop_align_eagle_kv_cache(target_out.past_key_values, final_seq_len)
 
             if len(best_path) > 0:
                 last_accepted_node = best_path[-1]
