@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import Mapping
 
 import torch
@@ -8,16 +10,34 @@ from src.data.create_inputs import (  # functions to create the prompts and inpu
 )
 from src.models.eagle import EagleModule
 from src.spec_decode_eagle import spec_decode_eagle
+from src.tasks.eagle.train_eagle import run_eagle_training
 from src.tasks.translation import load_data
 from src.utils import load_model
 
 
 def run_divergence_audit(config):
     model_name = config.target_model if config.target_model is not None else getattr(config, "base_model", None)
-    checkpoint_path = "checkpoints/eagle_npi/eagle_module_best.pt"
+    checkpoint_path = config.output_dir
 
     print(f"Loading tokenizer and target model: {model_name}...")
     target_model, tokenizer = load_model(str(model_name), device=config.device, draft_model_type=config.draft_model_type)
+    temp_eagle = EagleModule(
+        vocab_size=target_model.config.vocab_size,
+        embed_dim=target_model.config.hidden_size,
+        hidden_dim=target_model.config.hidden_size,
+        num_heads=config.num_heads
+    ).to(config.device)
+    if Path(os.path.join(config.output_dir, "eagle_module_best.pt")).exists():
+        checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+    else:
+        run_eagle_training(
+            config=config,
+            base_model=target_model,
+            eagle_module=temp_eagle,
+            tokenizer=tokenizer
+        )
+        checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+    config.draft_model = checkpoint_path
     target_model.eval()
 
     # Resolve device safely here after model is loaded
@@ -107,3 +127,11 @@ def run_divergence_audit(config):
         else:
             print("  Spec Token ID: [End of Sequence]")
     print("="*40)
+    with torch.no_grad():
+        base_outputs = target_model(input_ids=input_ids, output_hidden_states=True)
+        hidden_states = base_outputs.hidden_states[-1]
+        embeddings = draft_model.get_embedding(input_ids)
+
+        if embeddings.shape[-1] != hidden_states.shape[-1]:
+            raise ValueError("Dimension mismatch: Embedding dim does not match hidden size!")
+        print("✅ Hidden state and embedding dimensions match successfully.")
