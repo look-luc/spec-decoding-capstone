@@ -186,7 +186,8 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
             vocab_size=target_model.config.vocab_size,
             embed_dim=target_model.config.hidden_size,
             hidden_dim=target_model.config.hidden_size,
-            num_heads=config.num_heads
+            num_heads=config.num_heads,
+            num_layers=config.num_layers
         ).to(device)
 
         logger.info(f"Loading EAGLE weights from: {checkpoint_path}...")
