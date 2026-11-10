@@ -206,7 +206,7 @@ def eagle_draft_tree_expansion(
     generated_tokens,
     cur_gen_idx,
     mode,
-    score_threshold: float = 0.02
+    score_threshold: float = 0.05
 ):
     tree_nodes = []
     log_threshold = math.log(max(score_threshold, 1e-12))
