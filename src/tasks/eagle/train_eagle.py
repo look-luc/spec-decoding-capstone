@@ -55,7 +55,7 @@ def compute_eagle_loss(
                 attention_mask=attention_mask,
                 output_hidden_states=True,
             )
-            base_hidden_states = base_outputs.hidden_states[-2]
+            base_hidden_states = base_outputs.hidden_states[-1]
             base_logits = base_outputs.logits
 
             greedy_targets = torch.argmax(base_logits, dim=-1)
