@@ -101,7 +101,6 @@ def crop_align_eagle_kv_cache(kv_cache, base_seq_len):
         for layer_kv in kv_cache:
             if isinstance(layer_kv, tuple) and len(layer_kv) >= 2:
                 k, v = layer_kv[0], layer_kv[1]
-                # Crop key/value tensors along the sequence dimension (typically dim=-2 or dim=2 depending on layout)
                 if k.ndim == 4:
                     cropped.append((k[..., :base_seq_len, :], v[..., :base_seq_len, :]))
                 elif k.ndim == 3:
@@ -277,7 +276,9 @@ def eagle_draft_tree_expansion(
         for i, parent in enumerate(active_parents):
             logits_i = draft_raw_logits[i : i + 1]
 
-            if repetition_penalty != 1.0:
+            # SAFETY FIX: Disable repetition penalty during speculative draft expansion to prevent logit distortion
+            effective_repetition_penalty = 1.0 if mode == "greedy" else repetition_penalty
+            if effective_repetition_penalty != 1.0:
                 ancestor_token_list = get_ancestor_tokens(parent)
                 ancestor_tensor = torch.tensor(ancestor_token_list, dtype=generated_tokens.dtype, device=device)
                 full_context = torch.cat(
@@ -285,7 +286,7 @@ def eagle_draft_tree_expansion(
                     dim=-1
                 )
                 penalty_context = sliding_window(full_context, window=repetition_penalty_window)
-                logits_i = apply_repetition_penalty(logits_i, penalty_context, repetition_penalty)
+                logits_i = apply_repetition_penalty(logits_i, penalty_context, effective_repetition_penalty)
 
             logprobs_i = filter_logprobs(
                 torch.log_softmax(logits_i, dim=-1),
@@ -326,7 +327,7 @@ def spec_decode_eagle(
     input_ids: torch.Tensor,
     mode: Literal["greedy", "sample"],
     max_new_tokens: int = 128,
-    tree_choices: str | list[int] = [1, 4, 2, 3],
+    tree_choices: str | list[int] = [1, 3, 2, 1],
     top_k: int = 0,
     top_p: float = 0.0,
     repetition_penalty: float = 1.0,
@@ -467,7 +468,7 @@ def spec_decode_eagle(
                 logits=target_raw_logits,
                 generated_tokens=torch.cat([generated_tokens[:, :cur_gen_idx], flattened_tokens], dim=-1),
                 confirmed_len=cur_gen_idx,
-                penalty=repetition_penalty,
+                penalty=repetition_penalty if mode != "greedy" else 1.0,
                 window=repetition_penalty_window
             )
             target_logprobs = filter_logprobs(
@@ -541,8 +542,6 @@ def spec_decode_eagle(
             total_matched_tokens += best_accept_count
             total_draft_tokens += len(tree_nodes) - 1
 
-            # --- CRITICAL FIX: Align and crop KV Cache to discard unaccepted tree nodes ---
-            # Compute the exact sequence length corresponding to all confirmed tokens so far
             final_seq_len = base_seq_len + len(accepted_tokens) + 1
             target_kv_cache = crop_align_eagle_kv_cache(target_out.past_key_values, final_seq_len)
 
@@ -636,7 +635,7 @@ def apply_top_k(logits: torch.Tensor, k: int) -> torch.Tensor:
 
 def apply_top_p(logits: torch.Tensor, p: float) -> torch.Tensor:
     if p < 0.0 or p > 1.0:
-        raise ValueError(f"top_p must be between 0.0 and 1.0, got {p}")
+        raise ValueError(f"p must be between 0.0 and 1.0, got {p}")
     if p >= 1.0:
         return logits
     sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
