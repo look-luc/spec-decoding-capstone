@@ -276,7 +276,6 @@ def eagle_draft_tree_expansion(
         for i, parent in enumerate(active_parents):
             logits_i = draft_raw_logits[i : i + 1]
 
-            # SAFETY FIX: Disable repetition penalty during speculative draft expansion to prevent logit distortion
             effective_repetition_penalty = 1.0 if mode == "greedy" else repetition_penalty
             if effective_repetition_penalty != 1.0:
                 ancestor_token_list = get_ancestor_tokens(parent)

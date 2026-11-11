@@ -6,9 +6,9 @@ class EagleModule(nn.Module):
     def __init__(self, vocab_size: int, embed_dim: int, hidden_dim: int, num_heads: int = 8, num_layers: int = 4):
         super().__init__()
         self.embeddings = nn.Embedding(vocab_size, embed_dim)
-        self.hidden_norm = nn.LayerNorm(hidden_dim) # Add normalization for hidden states
+        self.hidden_norm = nn.RMSNorm(hidden_dim) if hasattr(nn, 'RMSNorm') else nn.LayerNorm(hidden_dim)
         self.fc_fusion = nn.Linear(embed_dim + hidden_dim, hidden_dim)
-        self.norm = nn.LayerNorm(hidden_dim)
+        self.norm = nn.RMSNorm(hidden_dim) if hasattr(nn, 'RMSNorm') else nn.LayerNorm(hidden_dim)
 
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=hidden_dim,
