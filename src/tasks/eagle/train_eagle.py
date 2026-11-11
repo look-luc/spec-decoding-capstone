@@ -15,10 +15,8 @@ import wandb
 from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from src.data.dataset import assemble_dataset
-from src.models.eagle import EagleModule
 from src.spec_decode_eagle import spec_decode_eagle
 
 logger = logging.getLogger(__name__)
