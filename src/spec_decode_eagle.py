@@ -331,7 +331,7 @@ def spec_decode_eagle(
     top_p: float = 0.0,
     repetition_penalty: float = 1.0,
     repetition_penalty_window: int = 16,
-    score_threshold: float = 0.02,
+    score_threshold: float = 0.2,
     eos_token_id: int | None = None,
     device=None,
     track_iterations: bool = False

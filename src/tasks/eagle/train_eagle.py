@@ -36,7 +36,7 @@ def compute_eagle_loss(
     batch: dict,
     device: torch.device = None,
     top_k: int = 40,
-    beta: float = 0.5,
+    beta: float = 0.7,
     temperature: float = 1.0
 ) -> torch.Tensor:
     if device is None:
