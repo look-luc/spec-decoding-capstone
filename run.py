@@ -142,6 +142,10 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
     # 2. Load Target Model
     logger.info(f"Loading target model: {model_name}...")
     target_model, target_tokenizer = load_model(model_name, device=config.device)
+    if hasattr(target_model, "set_attn_implementation"):
+        target_model.set_attn_implementation("eager")
+    else:
+        target_model.config._attn_implementation = "eager"
     device = next(target_model.parameters()).device
 
     # 3. Load Data
@@ -180,19 +184,33 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
             draft_model.heads.load_state_dict(head_weights)
 
     elif config.draft_model_type == "eagle":
-        logger.info(f"Initializing EAGLE draft module ({config.num_heads} heads)...")
-        draft_tokenizer = target_tokenizer
-        draft_model = EagleModule(
-            vocab_size=target_model.config.vocab_size,
-            embed_dim=target_model.config.hidden_size,
-            hidden_dim=target_model.config.hidden_size,
-            num_heads=config.num_heads,
-            num_layers=config.num_layers
-        ).to(device)
+        if not checkpoint_path or not os.path.exists(checkpoint_path):
+            logger.info("EAGLE checkpoint not found or not specified. Training EAGLE module...")
+            temp_target, temp_tokenizer = load_model(str(model_name), device=config.device, draft_model_type=config.draft_model_type)
+            temp_eagle = EagleModule(
+                vocab_size=temp_target.config.vocab_size,
+                embed_dim=temp_target.config.hidden_size,
+                hidden_dim=temp_target.config.hidden_size,
+                num_heads=config.num_heads,
+                num_layers=config.num_layers,  # Explicitly pass num_layers
+            ).to(config.device)
 
-        logger.info(f"Loading EAGLE weights from: {checkpoint_path}...")
-        eagle_weights = torch.load(checkpoint_path, map_location=device)
-        draft_model.load_state_dict(eagle_weights)
+            if Path(os.path.join(config.output_dir, "eagle_module_best.pt")).exists():
+                checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+            else:
+                run_eagle_training(
+                    config=config,
+                    base_model=temp_target,
+                    eagle_module=temp_eagle,
+                    tokenizer=temp_tokenizer
+                )
+                checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+            config.draft_model = checkpoint_path
+
+            del temp_target, temp_eagle, temp_tokenizer
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     elif config.draft_model_type == "ngram":
         draft_tokenizer = target_tokenizer

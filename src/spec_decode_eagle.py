@@ -132,11 +132,12 @@ def get_ancestor_tokens(node):
     return tokens[::-1]
 
 
-def build_eagle_tree_attn(tree_nodes, base_seq_len, device):
+def build_eagle_tree_attn(tree_nodes, base_seq_len, device, dtype=torch.float32):
     num_nodes = len(tree_nodes)
     total_len = base_seq_len + num_nodes
 
-    attn_mask = torch.full((num_nodes, total_len), -float("inf"), dtype=torch.float32, device=device)
+    mask_min = torch.finfo(dtype).min
+    attn_mask = torch.full((num_nodes, total_len), mask_min, dtype=dtype, device=device)
     pos_ids = torch.zeros(num_nodes, dtype=torch.long, device=device)
 
     for i in range(num_nodes):
@@ -152,7 +153,6 @@ def build_eagle_tree_attn(tree_nodes, base_seq_len, device):
             cur_ancestor = cur_ancestor.parent
 
     return attn_mask.unsqueeze(0).unsqueeze(0), pos_ids.unsqueeze(0)
-
 
 class Node:
     def __init__(self, index, parent, token_id, hidden_state, depth, log_score):
@@ -440,9 +440,12 @@ def spec_decode_eagle(
                 device=device
             )
             model_dtype = next(target_model.parameters()).dtype
-
-            tree_pos_ids = tree_pos_ids_list.detach().clone().to(dtype=torch.long, device=device)
-            tree_attn_mask = tree_attn_mask_list.detach().clone().to(dtype=model_dtype, device=device)
+            tree_attn_mask, tree_pos_ids = build_eagle_tree_attn(
+                tree_nodes=tree_nodes,
+                base_seq_len=base_seq_len,
+                device=device,
+                dtype=model_dtype,
+            )
 
             t_v0 = get_time()
             target_out = target_model(

@@ -83,36 +83,36 @@ def generate_output(
 
     if isinstance(draft_model, EagleModule) or config.draft_model_type.lower() == "eagle":
         global _CACHED_EAGLE_MODULE, _CACHED_CHECKPOINT_PATH
-        checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
 
-        # Initialize, load weights, and compile ONLY ONCE
-        if _CACHED_EAGLE_MODULE is None or _CACHED_CHECKPOINT_PATH != checkpoint_path:
-            target_hidden_dim = model.config.hidden_size
-            vocab_size = model.config.vocab_size
+        if isinstance(draft_model, EagleModule):
+            eagle_module = draft_model
+        else:
+            checkpoint_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+            if _CACHED_EAGLE_MODULE is None or _CACHED_CHECKPOINT_PATH != checkpoint_path:
+                target_hidden_dim = model.config.hidden_size
+                vocab_size = model.config.vocab_size
 
-            eagle_module = EagleModule(
-                vocab_size=vocab_size,
-                embed_dim=getattr(config, "embed_dim", target_hidden_dim),
-                hidden_dim=target_hidden_dim,
-                num_heads=getattr(config, "num_heads", 8),
-                num_layers=getattr(config, "num_layers", 2)
-            ).to(config.device)
+                eagle_module = EagleModule(
+                    vocab_size=vocab_size,
+                    embed_dim=getattr(config, "embed_dim", target_hidden_dim),
+                    hidden_dim=target_hidden_dim,
+                    num_heads=getattr(config, "num_heads", 8),
+                    num_layers=getattr(config, "num_layers", 4)
+                ).to(config.device)
 
-            if os.path.exists(checkpoint_path):
-                state_dict = torch.load(checkpoint_path, map_location=config.device)
-                eagle_module.load_state_dict(state_dict)
-            else:
-                raise FileNotFoundError(
-                    f"Trained EAGLE checkpoint not found at {checkpoint_path}. "
-                    "Make sure training completed and saved the best checkpoint."
-                )
+                if os.path.exists(checkpoint_path):
+                    state_dict = torch.load(checkpoint_path, map_location=config.device)
+                    eagle_module.load_state_dict(state_dict)
+                else:
+                    raise FileNotFoundError(
+                        f"Trained EAGLE checkpoint not found at {checkpoint_path}."
+                    )
 
-            # Compile once using torch.compile
-            eagle_module = torch.compile(eagle_module, mode="reduce-overhead")
-            _CACHED_EAGLE_MODULE = eagle_module
-            _CACHED_CHECKPOINT_PATH = checkpoint_path
+                _CACHED_EAGLE_MODULE = eagle_module
+                _CACHED_CHECKPOINT_PATH = checkpoint_path
 
-        eagle_module = _CACHED_EAGLE_MODULE
+            eagle_module = _CACHED_EAGLE_MODULE
+
         eagle_module.eval()
 
         output_ids, metrics = spec_decode_eagle(
@@ -122,11 +122,14 @@ def generate_output(
             input_ids=inputs["input_ids"],
             mode=config.decoding_mode,
             max_new_tokens=config.max_new_tokens,
-            tree_choices=getattr(config, "tree_choices", "custom"),
+            tree_choices=getattr(config, "tree_choices", "conservative"),
             top_k=config.top_k,
             top_p=config.top_p,
             repetition_penalty=config.repetition_penalty,
-            device=inputs["input_ids"].device
+            repetition_penalty_window=getattr(config, "repetition_penalty_window", 16),
+            score_threshold=getattr(config, "score_threshold", 0.005),
+            device=inputs["input_ids"].device,
+            track_iterations=getattr(config, "track_iterations", False),
         )
         decoded = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=True)
         return cast(str, decoded).strip(), metrics

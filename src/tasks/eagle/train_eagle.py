@@ -396,7 +396,11 @@ def run_eagle_training(config, base_model, eagle_module, tokenizer):
                 log_micro_count = 0
 
     save_eagle_checkpoint(eagle_module, config.output_dir, label="final")
-    torch.save(eagle_module.state_dict(), os.path.join(config.output_dir, "eagle_module_best.pt"))
+    best_path = os.path.join(config.output_dir, "eagle_module_best.pt")
+    if not os.path.exists(best_path):
+        torch.save(eagle_module.state_dict(), best_path)
+
+    eagle_module.load_state_dict(torch.load(best_path, map_location=device))
 
     logger.info("Running post-training correctness audit & metrics evaluation...")
     audit_speculative_correctness(
@@ -438,13 +442,14 @@ def audit_speculative_correctness(
     device="cuda",
     max_samples=50,
     tree_choices="conservative",
-    repetition_penalty=1.1
+    repetition_penalty=1.0
 ):
     target_model.eval()
     eagle_module.eval()
 
     total_samples = 0
     exact_matches = 0
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
 
     print("Starting speculative decoding correctness audit...")
     with torch.no_grad():
@@ -475,11 +480,10 @@ def audit_speculative_correctness(
                     max_new_tokens=max_new_tokens,
                     do_sample=False,
                     repetition_penalty=repetition_penalty,
-                    pad_token_id=tokenizer.pad_token_id,
+                    pad_token_id=pad_id,
                     eos_token_id=tokenizer.eos_token_id
                 )
 
-                # Speculative generation with penalty disabled[cite: 23, 24]
                 spec_out, _ = spec_decode_eagle(
                     target_model=target_model,
                     eagle_module=eagle_module,
@@ -510,7 +514,7 @@ def audit_speculative_correctness(
                 break
 
     agreement_rate = exact_matches / total_samples if total_samples > 0 else 0.0
-    print(f"\nCorrectness Audit Result: {exact_matches}/{total_samples} exact matches ({agreement_rate * 100:.1f}%)[cite: 23]")
+    print(f"\nCorrectness Audit Result: {exact_matches}/{total_samples} exact matches ({agreement_rate * 100:.1f}%)")
     return agreement_rate
 
 
