@@ -387,7 +387,7 @@ if __name__ == "__main__":
         "config", help="A config file (cfg, ini) with configuration parameters"
     )
     parser.add_argument(
-        "--diagnose", action='store_true', help="diagnose the decoding step"
+        "--diagnose", action='store_true', default=False, help="diagnose the decoding step"
     )
     parser.add_argument(
         "--overrides",
