@@ -247,7 +247,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
 
     audit_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False, collate_fn=audit_collate_fn)
 
-    if isinstance(draft_model, EagleModule):
+    if isinstance(config.draft_model, EagleModule):
         logger.info("Running correctness audit before benchmark...")
         audit_speculative_correctness(
             target_model=target_model,
