@@ -17,7 +17,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from src.data.dataset import assemble_dataset
-from src.spec_decode_eagle import spec_decode_eagle
+from src.spec_decode_eagle import get_stop_token_ids, spec_decode_eagle
 
 logger = logging.getLogger(__name__)
 
@@ -450,6 +450,7 @@ def audit_speculative_correctness(
     total_samples = 0
     exact_matches = 0
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+    stop_ids = list(get_stop_token_ids(tokenizer, tokenizer.eos_token_id))
 
     print("Starting speculative decoding correctness audit...")
     with torch.no_grad():
@@ -481,7 +482,7 @@ def audit_speculative_correctness(
                     do_sample=False,
                     repetition_penalty=repetition_penalty,
                     pad_token_id=pad_id,
-                    eos_token_id=tokenizer.eos_token_id
+                    eos_token_id=stop_ids,
                 )
 
                 spec_out, _ = spec_decode_eagle(
@@ -493,21 +494,17 @@ def audit_speculative_correctness(
                     max_new_tokens=max_new_tokens,
                     tree_choices=tree_choices,
                     repetition_penalty=repetition_penalty,
-                    device=device
+                    device=device,
                 )
 
-                min_len = min(target_out.size(1), spec_out.size(1))
-                target_trimmed = target_out[:, :min_len]
-                spec_trimmed = spec_out[:, :min_len]
-
-                match = torch.equal(target_trimmed, spec_trimmed)
+                match = torch.equal(target_out, spec_out)
                 if match:
                     exact_matches += 1
                 else:
                     print(f"\n[Mismatch] Sample {total_samples}")
-                    print(f"Prompt:      {tokenizer.decode(prompt[0], skip_special_tokens=True)}")
-                    print(f"Target text: {tokenizer.decode(target_out[0], skip_special_tokens=True)}")
-                    print(f"Spec text:   {tokenizer.decode(spec_out[0], skip_special_tokens=True)}")
+                    print(f"Prompt IDs:  {prompt[0].tolist()}")
+                    print(f"Target IDs:  {target_out[0].tolist()}")
+                    print(f"Spec IDs:    {spec_out[0].tolist()}")
 
                 total_samples += 1
             if total_samples >= max_samples:

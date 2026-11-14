@@ -254,8 +254,9 @@ def eagle_draft_tree_expansion(
         path_hiddens_tensor = torch.stack(batch_path_hiddens, dim=0).to(device)
 
         token_embs = eagle_module.get_embedding(path_tokens_tensor)
-        fused_feat = torch.cat([token_embs, path_hiddens_tensor], dim=-1)
-        projected = eagle_module.norm(eagle_module.fc_fusion(fused_feat) + path_hiddens_tensor)
+        normed_hiddens = eagle_module.hidden_norm(path_hiddens_tensor)
+        fused_feat = torch.cat([token_embs, normed_hiddens], dim=-1)
+        projected = eagle_module.norm(eagle_module.fc_fusion(fused_feat) + normed_hiddens)
 
         seq_len = projected.size(1)
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=device) if seq_len > 1 else None
@@ -433,12 +434,6 @@ def spec_decode_eagle(
 
             flattened_tokens = extract_token_ids(tree_nodes=tree_nodes, device=device)
             base_seq_len = get_kv_cache_length(target_kv_cache)
-
-            tree_attn_mask_list, tree_pos_ids_list = build_eagle_tree_attn(
-                tree_nodes=tree_nodes,
-                base_seq_len=base_seq_len,
-                device=device
-            )
             model_dtype = next(target_model.parameters()).dtype
             tree_attn_mask, tree_pos_ids = build_eagle_tree_attn(
                 tree_nodes=tree_nodes,

@@ -343,8 +343,8 @@ def setup_wandb(config: ExperimentConfig | MedusaConfig | EagleConfig):
     target_short = target_model_name.split("/")[-1] if target_model_name else "base"
 
     is_spec = config.draft_model_type.lower() != "none"
-    is_medusa = config.draft_model_type.lower() in ("medusa", "madusa")
-    is_eagle = config.draft_model_type.lower() == "eagle"
+    is_medusa = isinstance(config.draft_model, madusa) or config.draft_model_type.lower() in ("medusa", "madusa")
+    is_eagle = isinstance(config.draft_model, EagleModule) or config.draft_model_type.lower() == "eagle"
 
     num_heads = getattr(config, "num_heads", None)
     tree_choices = getattr(config, "tree_choices", None)

@@ -10,12 +10,14 @@ class EagleModule(nn.Module):
         self.fc_fusion = nn.Linear(embed_dim + hidden_dim, hidden_dim)
         self.norm = nn.RMSNorm(hidden_dim) if hasattr(nn, 'RMSNorm') else nn.LayerNorm(hidden_dim)
 
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=hidden_dim,
-            nhead=num_heads,
-            batch_first=True
-        )
-        self.decoder_layers = nn.ModuleList([decoder_layer for _ in range(num_layers)])
+        self.decoder_layers = nn.ModuleList([
+            nn.TransformerDecoderLayer(
+                d_model=hidden_dim,
+                nhead=num_heads,
+                batch_first=True
+            )
+            for _ in range(num_layers)
+        ])
         self.lm_head = nn.Linear(hidden_dim, vocab_size, bias=False)
 
     def get_embedding(self, token_id: torch.Tensor) -> torch.Tensor:
@@ -28,7 +30,7 @@ class EagleModule(nn.Module):
         **kwargs
     ):
         token_emb = self.get_embedding(token_id)
-        normed_hidden = self.hidden_norm(hidden_state) # Normalize incoming hidden states
+        normed_hidden = self.hidden_norm(hidden_state)
         fused = torch.cat([token_emb, normed_hidden], dim=-1)
         projected = self.norm(self.fc_fusion(fused) + normed_hidden)
 
