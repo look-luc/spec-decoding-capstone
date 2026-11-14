@@ -212,6 +212,20 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+        logger.info(f"Initializing EAGLE module and loading weights from: {checkpoint_path}...")
+        draft_tokenizer = target_tokenizer
+        draft_model = EagleModule(
+            vocab_size=target_model.config.vocab_size,
+            embed_dim=getattr(config, "embed_dim", target_model.config.hidden_size),
+            hidden_dim=target_model.config.hidden_size,
+            num_heads=getattr(config, "num_heads", 8),
+            num_layers=getattr(config, "num_layers", 4)
+        ).to(device)
+
+        state_dict = torch.load(checkpoint_path, map_location=device)
+        draft_model.load_state_dict(state_dict)
+        draft_model.eval()
+
     elif config.draft_model_type == "ngram":
         draft_tokenizer = target_tokenizer
         draft_model = NGramModel(n=config.ngram_n, tokenizer=draft_tokenizer, vocab_size=target_model.config.vocab_size)
