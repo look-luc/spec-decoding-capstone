@@ -23,12 +23,12 @@ class EagleConfig:
     top_k: int = 0
     top_p: float = 0.0
 
-    repetition_penalty: float = 1.0
+    repetition_penalty: float = 1.1
     repetition_penalty_window: int = 16
 
-    gamma: int = 5
+    gamma: int = 4
     num_heads: int = 8
-    num_layers: int = 2
+    num_layers: int = 4
     track_iterations: bool = True
 
     ngram_n: int = 2
@@ -51,8 +51,8 @@ class EagleConfig:
     max_steps: int = 3000
     warmup_steps: int = 200
     log_every: int = 10
-    wandb_tag: str | None = "Eagle 7B Target"
-    output_dir: str = "checkpoints/eagle_7b"
+    wandb_tag: str | None = "Eagle 9B Target"
+    output_dir: str = "checkpoints/eagle_ber"
     wandb_project: str = WANDB_PROJECT
 
     def __post_init__(self):
