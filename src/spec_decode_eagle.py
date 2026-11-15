@@ -5,7 +5,7 @@ from typing import Literal, cast
 import torch
 import torch.nn as nn
 
-
+# Trying to get better results
 def get_stop_token_ids(tokenizer, eos_token_id=None):
     stop_ids = set()
     if eos_token_id is not None:

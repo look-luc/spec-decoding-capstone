@@ -192,7 +192,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
                 embed_dim=temp_target.config.hidden_size,
                 hidden_dim=temp_target.config.hidden_size,
                 num_heads=config.num_heads,
-                num_layers=config.num_layers,  # Explicitly pass num_layers
+                num_layers=config.num_layers,
             ).to(config.device)
 
             if Path(os.path.join(config.output_dir, "eagle_module_best.pt")).exists():
