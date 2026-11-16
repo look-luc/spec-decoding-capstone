@@ -1,3 +1,4 @@
+import ast
 import math
 import time
 from typing import Literal, cast
@@ -174,24 +175,48 @@ def create_node(index, parent, token_id, hidden_state, depth, log_score):
 
 
 def parse_tree_choices(tree_choices: str | list[int]) -> list[int]:
+    """Robustly parses tree choices from a Python list, stringified list ([1, 2]),
+    comma-separated string (1, 2, 1), or named preset string.
+    """
     if isinstance(tree_choices, list):
-        return tree_choices
+        return [int(x) for x in tree_choices]
 
-    tc_lower = tree_choices.lower().strip()
-    presets = {
-        "eagle_1": [1, 4, 2, 2],
-        "eagle_2": [1, 8, 4, 2],
-        "custom": [1, 4, 2, 3],
-        "customlinear": [1, 3, 1, 1],
-        "conservative": [1, 3, 2, 1],
-        "balance_1": [1, 4, 2, 1],
-        "balance_2": [1, 5, 2, 1],
-        "linear": [1, 1, 1, 1],
-        "wide_shallow": [1, 4, 1, 1],
-        "wide_shallow_b": [1, 5, 1],
-    }
-    if tc_lower in presets:
-        return presets[tc_lower]
+    if isinstance(tree_choices, str):
+        tc_clean = tree_choices.strip()
+
+        # 1. Handle stringified Python/JSON lists (e.g., "[1, 2]")
+        if tc_clean.startswith("[") and tc_clean.endswith("]"):
+            try:
+                parsed = ast.literal_eval(tc_clean)
+                if isinstance(parsed, list):
+                    return [int(x) for x in parsed]
+            except Exception:
+                pass
+
+        # 2. Handle comma-separated values (e.g., "1, 2, 1")
+        if "," in tc_clean:
+            try:
+                return [int(x.strip()) for x in tc_clean.split(",") if x.strip()]
+            except Exception:
+                pass
+
+        # 3. Handle string presets
+        tc_lower = tc_clean.lower()
+        presets = {
+            "eagle_1": [1, 4, 2, 2],
+            "eagle_2": [1, 8, 4, 2],
+            "custom": [1, 4, 2, 3],
+            "customlinear": [1, 3, 1, 1],
+            "conservative": [1, 3, 2, 1],
+            "balance_1": [1, 4, 2, 1],
+            "balance_2": [1, 5, 2, 1],
+            "linear": [1, 1, 1, 1],
+            "wide_shallow": [1, 4, 1, 1],
+            "wide_shallow_b": [1, 5, 1],
+        }
+        if tc_lower in presets:
+            return presets[tc_lower]
+
     return [1, 4, 2, 3]
 
 
@@ -278,7 +303,6 @@ def eagle_draft_tree_expansion(
         for i, parent in enumerate(active_parents):
             logits_i = draft_raw_logits[i : i + 1]
 
-            # FIX: Respect repetition_penalty consistently even in greedy mode
             if repetition_penalty != 1.0:
                 ancestor_token_list = get_ancestor_tokens(parent)
                 ancestor_tensor = torch.tensor(ancestor_token_list, dtype=generated_tokens.dtype, device=device)
@@ -462,7 +486,6 @@ def spec_decode_eagle(
             target_raw_logits = target_out.logits
             verifier_hiddens = target_out.hidden_states[-1]
 
-            # FIX: Respect repetition_penalty consistently in batched verification
             penalize_target_logits = apply_repetition_penalty_batched(
                 logits=target_raw_logits,
                 generated_tokens=torch.cat([generated_tokens[:, :cur_gen_idx], flattened_tokens], dim=-1),
@@ -652,7 +675,7 @@ def apply_repetition_penalty(logits: torch.Tensor, context_ids: torch.Tensor, pe
     for b in range(logits.size(0)):
         max_vocab_index = cast(int, torch.max(context_ids[b]).item() + 1)
         window_counts = torch.zeros(max_vocab_index, dtype=torch.long, device=context_ids[b].device)
-        window_counts.scatter_add_(dim=0, index=context_ids[b], src=torch.ones_init_like(context_ids[b]) if hasattr(torch, 'ones_init_like') else torch.ones_like(context_ids[b]))
+        window_counts.scatter_add_(dim=0, index=context_ids[b], src=torch.ones_like(context_ids[b]))
         per_token_penalty = penalty ** window_counts
         logits[b, :max_vocab_index] = torch.where(
             logits[b, :max_vocab_index] > 0,
