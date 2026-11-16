@@ -5,7 +5,7 @@ from typing import Literal, cast
 import torch
 import torch.nn as nn
 
-# Trying to get better results
+
 def get_stop_token_ids(tokenizer, eos_token_id=None):
     stop_ids = set()
     if eos_token_id is not None:
@@ -154,6 +154,7 @@ def build_eagle_tree_attn(tree_nodes, base_seq_len, device, dtype=torch.float32)
 
     return attn_mask.unsqueeze(0).unsqueeze(0), pos_ids.unsqueeze(0)
 
+
 class Node:
     def __init__(self, index, parent, token_id, hidden_state, depth, log_score):
         self.index = index
@@ -277,8 +278,8 @@ def eagle_draft_tree_expansion(
         for i, parent in enumerate(active_parents):
             logits_i = draft_raw_logits[i : i + 1]
 
-            effective_repetition_penalty = 1.0 if mode == "greedy" else repetition_penalty
-            if effective_repetition_penalty != 1.0:
+            # FIX: Respect repetition_penalty consistently even in greedy mode
+            if repetition_penalty != 1.0:
                 ancestor_token_list = get_ancestor_tokens(parent)
                 ancestor_tensor = torch.tensor(ancestor_token_list, dtype=generated_tokens.dtype, device=device)
                 full_context = torch.cat(
@@ -286,7 +287,7 @@ def eagle_draft_tree_expansion(
                     dim=-1
                 )
                 penalty_context = sliding_window(full_context, window=repetition_penalty_window)
-                logits_i = apply_repetition_penalty(logits_i, penalty_context, effective_repetition_penalty)
+                logits_i = apply_repetition_penalty(logits_i, penalty_context, repetition_penalty)
 
             logprobs_i = filter_logprobs(
                 torch.log_softmax(logits_i, dim=-1),
@@ -461,11 +462,12 @@ def spec_decode_eagle(
             target_raw_logits = target_out.logits
             verifier_hiddens = target_out.hidden_states[-1]
 
+            # FIX: Respect repetition_penalty consistently in batched verification
             penalize_target_logits = apply_repetition_penalty_batched(
                 logits=target_raw_logits,
                 generated_tokens=torch.cat([generated_tokens[:, :cur_gen_idx], flattened_tokens], dim=-1),
                 confirmed_len=cur_gen_idx,
-                penalty=repetition_penalty if mode != "greedy" else 1.0,
+                penalty=repetition_penalty,
                 window=repetition_penalty_window
             )
             target_logprobs = filter_logprobs(
@@ -650,7 +652,7 @@ def apply_repetition_penalty(logits: torch.Tensor, context_ids: torch.Tensor, pe
     for b in range(logits.size(0)):
         max_vocab_index = cast(int, torch.max(context_ids[b]).item() + 1)
         window_counts = torch.zeros(max_vocab_index, dtype=torch.long, device=context_ids[b].device)
-        window_counts.scatter_add_(dim=0, index=context_ids[b], src=torch.ones_like(context_ids[b]))
+        window_counts.scatter_add_(dim=0, index=context_ids[b], src=torch.ones_init_like(context_ids[b]) if hasattr(torch, 'ones_init_like') else torch.ones_like(context_ids[b]))
         per_token_penalty = penalty ** window_counts
         logits[b, :max_vocab_index] = torch.where(
             logits[b, :max_vocab_index] > 0,
