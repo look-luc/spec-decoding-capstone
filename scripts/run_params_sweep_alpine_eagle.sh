@@ -1,35 +1,8 @@
 #!/usr/bin/env bash
-#
-# SLURM job-array sweep for distillation hyperparameter search.
-#
-# Each array task = one (lr, steps, grad_accum, warmup, weight_decay) combo.
-# All tasks run in parallel (up to Alpine's 21-GPU per-user limit on aa100).
-#
-# Quick sweep  (8 combos):  each run ~30-45 min  → done in 1-2 hours total
-# Full  sweep (324 combos): each run ~30-60 min  → done in ~3-5 hours total
-#                           (21 jobs run simultaneously, so 324/21 ≈ 16 waves)
-#
-# ── Quick sweep (8 runs) ────
-#   sbatch --array=0-7   scripts/run_params_sweep_alpine.sh
-#
-# ── Full sweep (324 runs) ────
-#   sbatch --array=0-323 scripts/run_params_sweep_alpine.sh
-#
-# ── Override language / mode ─────
-#   sbatch --array=0-323 --export=LANG_CODE=oci,MODE=general \
-#          scripts/run_params_sweep_alpine.sh
-#
-# ── Multiple languages (each language = its own array batch) ───
-#   for lang in ber npi haw smo; do
-#     sbatch --array=0-323 --export=LANG_CODE=$lang,MODE=general \
-#            --job-name=distill-${lang} scripts/run_params_sweep_alpine.sh
-#   done
-#
-
 #SBATCH --partition=aa100
 #SBATCH --qos=gpu-normal
 #SBATCH --account=ucb-general
-#SBATCH --job-name=distill-sweep_eagle
+#SBATCH --job-name=eagle-sweep
 #SBATCH --output=logs/eagle_%A_%a.out
 #SBATCH --error=logs/eagle_%A_%a.err
 #SBATCH --nodes=1
@@ -41,66 +14,38 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=lude4390@colorado.edu
 
-# %A = job array master ID, %a = this task's index
-# Limit concurrent running tasks to 21 (Alpine aa100 per-user GPU cap).
-# Set via --array=0-323%21 or override at submit time.
-
 set -euo pipefail
 
-# ── Defaults (override via --export) ───
+# Capture config passed from sbatch (defaulting to eagle_greedy.cfg)
+CONFIG="${1:-experiments/eagle_greedy.cfg}"
 LANG_CODE="${LANG_CODE:-chr}"
-MODE="${MODE:-general}"
-EXTRA="${EXTRA:-}"
 
-# ── Hyperparameter grids ───
-#
-# The array index maps to one unique combo using integer arithmetic.
-# Grid sizes must match --array=0-N (N = product of all grid sizes minus 1).
-#
-#   Quick  (--array=0-7):    2 x 2 x 2 x 1 x 1 =   8
-#   Full   (--array=0-323):  4 x 3 x 3 x 3 x 3 = 324
-#
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
-TOTAL_TASKS="${SLURM_ARRAY_TASK_COUNT:-1}"
 
-if [[ "$TOTAL_TASKS" -le 8 ]]; then
-    # Quick grid
-    LR_GRID=(3e-5 5e-5)
-    STEPS_GRID=(2000 3000)
-    GA_GRID=(4 8)
-    WARMUP_GRID=(0.06)
-    WD_GRID=(0.01)
-else
-    # Full grid
-    LR_GRID=(1e-5 3e-5 5e-5 8e-5)
-    STEPS_GRID=(1500 2000 3000)
-    GA_GRID=(4 8 16)
-    WARMUP_GRID=(0.03 0.06 0.10)
-    WD_GRID=(0.0 0.01 0.05)
-fi
+# ── 16-Combination Eagle Grid (Matching --array=0-15) ───
+LR_GRID=(5e-5 1e-4)
+STEPS_GRID=(3000 5000)
+GA_GRID=(2 4)
+GAMMA_GRID=(4 5)
 
-N_WD="${#WD_GRID[@]}"
-N_WARMUP="${#WARMUP_GRID[@]}"
+N_GAMMA="${#GAMMA_GRID[@]}"
 N_GA="${#GA_GRID[@]}"
 N_STEPS="${#STEPS_GRID[@]}"
 
-WD_IDX=$(( TASK_ID % N_WD ))
-WARMUP_IDX=$(( (TASK_ID / N_WD) % N_WARMUP ))
-GA_IDX=$(( (TASK_ID / (N_WD * N_WARMUP)) % N_GA ))
-STEPS_IDX=$(( (TASK_ID / (N_WD * N_WARMUP * N_GA)) % N_STEPS ))
-LR_IDX=$(( (TASK_ID / (N_WD * N_WARMUP * N_GA * N_STEPS)) ))
+GAMMA_IDX=$(( TASK_ID % N_GAMMA ))
+GA_IDX=$(( (TASK_ID / N_GAMMA) % N_GA ))
+STEPS_IDX=$(( (TASK_ID / (N_GAMMA * N_GA)) % N_STEPS ))
+LR_IDX=$(( (TASK_ID / (N_GAMMA * N_GA * N_STEPS)) ))
 
 LR="${LR_GRID[$LR_IDX]}"
 STEPS="${STEPS_GRID[$STEPS_IDX]}"
 GA="${GA_GRID[$GA_IDX]}"
-WARMUP="${WARMUP_GRID[$WARMUP_IDX]}"
-WD="${WD_GRID[$WD_IDX]}"
+GAMMA="${GAMMA_GRID[$GAMMA_IDX]}"
 
-LABEL="lr${LR}_s${STEPS}_ga${GA}_wu${WARMUP}_wd${WD}"
+LABEL="lr${LR}_s${STEPS}_ga${GA}_g${GAMMA}"
 
 module purge
 module load uv
-
 source .venv/bin/activate
 
 cd "${SLURM_SUBMIT_DIR}"
@@ -117,19 +62,19 @@ echo "======================================================================"
 echo "  Eagle Array Job: ${SLURM_ARRAY_JOB_ID}, task ${TASK_ID}"
 echo "  Node:       $(hostname)"
 echo "  Language:   ${LANG_CODE}"
-echo "  Combo:      lr=${LR} steps=${STEPS} ga=${GA}"
+echo "  Combo:      lr=${LR} steps=${STEPS} ga=${GA} gamma=${GAMMA}"
 echo "  Output dir: ${OUTPUT_DIR}"
 echo "  Start:      $(date)"
 echo "======================================================================"
 
-# Run through the main experiment driver run.py, which triggers train_eagle.py
-# if the Eagle checkpoint doesn't exist yet, then evaluates it.
+# Run via run.py for online Eagle training and evaluation
 python run.py "${CONFIG}" \
     -o language_code="${LANG_CODE}" \
        output_dir="${OUTPUT_DIR}" \
        learning_rate="${LR}" \
        max_steps="${STEPS}" \
-       grad_accum_steps="${GA}"
+       grad_accum_steps="${GA}" \
+       gamma="${GAMMA}"
 
 echo ""
 echo "  Done: $(date)"
