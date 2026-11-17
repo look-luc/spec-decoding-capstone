@@ -26,57 +26,77 @@
 #   done
 #
 
-#!/usr/bin/env bash
-#
-# SLURM job-array sweep for Eagle training & evaluation hyperparameters.
-#
-# Usage:
-#   sbatch --array=0-7 scripts/run_params_sweep_alpine.sh
-#
-
 #SBATCH --partition=aa100
 #SBATCH --qos=normal
 #SBATCH --account=ucb-general
-#SBATCH --job-name=eagle-sweep
-#SBATCH --output=logs/eagle_sweep_%A_%a.out
-#SBATCH --error=logs/eagle_sweep_%A_%a.err
+#SBATCH --job-name=distill-sweep_eagle
+#SBATCH --output=logs/eagle_%A_%a.out
+#SBATCH --error=logs/eagle_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
-#SBATCH --time=04:00:00
+#SBATCH --time=05:30:00
 #SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=lude4390@colorado.edu
+
+# %A = job array master ID, %a = this task's index
+# Limit concurrent running tasks to 21 (Alpine aa100 per-user GPU cap).
+# Set via --array=0-323%21 or override at submit time.
 
 set -euo pipefail
 
-# ── Defaults ───
-LANG_CODE="${LANG_CODE:-ber}"
-CONFIG="experiments/eagle_greedy.cfg"
+# ── Defaults (override via --export) ───
+LANG_CODE="${LANG_CODE:-chr}"
+MODE="${MODE:-general}"
+EXTRA="${EXTRA:-}"
 
-# ── Hyperparameter grid for Eagle ───
+# ── Hyperparameter grids ───
+#
+# The array index maps to one unique combo using integer arithmetic.
+# Grid sizes must match --array=0-N (N = product of all grid sizes minus 1).
+#
+#   Quick  (--array=0-7):    2 x 2 x 2 x 1 x 1 =   8
+#   Full   (--array=0-323):  4 x 3 x 3 x 3 x 3 = 324
+#
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
+TOTAL_TASKS="${SLURM_ARRAY_TASK_COUNT:-1}"
 
-LR_GRID=(5e-5 1e-4)
-STEPS_GRID=(3000 5000)
-GA_GRID=(2 4)
-GAMMA_GRID=(4 5)
+if [[ "$TOTAL_TASKS" -le 8 ]]; then
+    # Quick grid
+    LR_GRID=(3e-5 5e-5)
+    STEPS_GRID=(2000 3000)
+    GA_GRID=(4 8)
+    WARMUP_GRID=(0.06)
+    WD_GRID=(0.01)
+else
+    # Full grid
+    LR_GRID=(1e-5 3e-5 5e-5 8e-5)
+    STEPS_GRID=(1500 2000 3000)
+    GA_GRID=(4 8 16)
+    WARMUP_GRID=(0.03 0.06 0.10)
+    WD_GRID=(0.0 0.01 0.05)
+fi
 
-N_GAMMA="${#GAMMA_GRID[@]}"
+N_WD="${#WD_GRID[@]}"
+N_WARMUP="${#WARMUP_GRID[@]}"
 N_GA="${#GA_GRID[@]}"
 N_STEPS="${#STEPS_GRID[@]}"
 
-GAMMA_IDX=$(( TASK_ID % N_GAMMA ))
-GA_IDX=$(( (TASK_ID / N_GAMMA) % N_GA ))
-STEPS_IDX=$(( (TASK_ID / (N_GAMMA * N_GA)) % N_STEPS ))
-LR_IDX=$(( (TASK_ID / (N_GAMMA * N_GA * N_STEPS)) ))
+WD_IDX=$(( TASK_ID % N_WD ))
+WARMUP_IDX=$(( (TASK_ID / N_WD) % N_WARMUP ))
+GA_IDX=$(( (TASK_ID / (N_WD * N_WARMUP)) % N_GA ))
+STEPS_IDX=$(( (TASK_ID / (N_WD * N_WARMUP * N_GA)) % N_STEPS ))
+LR_IDX=$(( (TASK_ID / (N_WD * N_WARMUP * N_GA * N_STEPS)) ))
 
 LR="${LR_GRID[$LR_IDX]}"
 STEPS="${STEPS_GRID[$STEPS_IDX]}"
 GA="${GA_GRID[$GA_IDX]}"
-GAMMA="${GAMMA_GRID[$GAMMA_IDX]}"
+WARMUP="${WARMUP_GRID[$WARMUP_IDX]}"
+WD="${WD_GRID[$WD_IDX]}"
 
-LABEL="lr${LR}_s${STEPS}_ga${GA}_g${GAMMA}"
+LABEL="lr${LR}_s${STEPS}_ga${GA}_wu${WARMUP}_wd${WD}"
 
 module purge
 module load uv
