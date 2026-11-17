@@ -35,7 +35,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:a100_80gb:2
+#SBATCH --gres=gpu:a100_80gb:1
 #SBATCH --mem=48G
 #SBATCH --time=05:30:00
 #SBATCH --mail-type=END,FAIL
