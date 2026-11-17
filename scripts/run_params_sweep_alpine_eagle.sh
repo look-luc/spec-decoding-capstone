@@ -117,7 +117,7 @@ echo "======================================================================"
 echo "  Eagle Array Job: ${SLURM_ARRAY_JOB_ID}, task ${TASK_ID}"
 echo "  Node:       $(hostname)"
 echo "  Language:   ${LANG_CODE}"
-echo "  Combo:      lr=${LR} steps=${STEPS} ga=${GA} gamma=${GAMMA}"
+echo "  Combo:      lr=${LR} steps=${STEPS} ga=${GA}"
 echo "  Output dir: ${OUTPUT_DIR}"
 echo "  Start:      $(date)"
 echo "======================================================================"
@@ -129,8 +129,7 @@ python run.py "${CONFIG}" \
        output_dir="${OUTPUT_DIR}" \
        learning_rate="${LR}" \
        max_steps="${STEPS}" \
-       grad_accum_steps="${GA}" \
-       gamma="${GAMMA}"
+       grad_accum_steps="${GA}"
 
 echo ""
 echo "  Done: $(date)"
