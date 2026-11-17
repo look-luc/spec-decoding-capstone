@@ -9,5 +9,5 @@ for lang in chr haw ibo lkt mus npi oci oji que zgh zh amh yor grn aed eng deu s
   sbatch --wait --array=0-15%16 --export=LANG_CODE=$lang scripts/run_params_sweep_alpine_eagle.sh
 
   echo "Finished $lang. Moving to next language..."
-  sleep 5
+  sleep 35
 done
