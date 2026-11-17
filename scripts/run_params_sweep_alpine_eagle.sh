@@ -27,7 +27,7 @@
 #
 
 #SBATCH --partition=aa100
-#SBATCH --qos=normal
+#SBATCH --qos=gpu-normal
 #SBATCH --account=ucb-general
 #SBATCH --job-name=distill-sweep_eagle
 #SBATCH --output=logs/eagle_%A_%a.out
