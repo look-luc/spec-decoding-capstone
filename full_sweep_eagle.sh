@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-lang=lkt
 echo "=================================================="
 echo "Submitting and waiting for language: $lang"
 echo "=================================================="
 
-# --wait blocks the loop until all 16 tasks of this language finish and clear the queue
-sbatch --wait --array=0-15%16 --export=LANG_CODE=$lang scripts/run_params_sweep_alpine_eagle.sh experiments/eagle_greedy.cfg
+for lang in chr haw ibo lkt mus npi oci oji que zgh zh amh yor grn aed eng deu spa hin; do
+    LABEL="lr${LR}_s${STEPS}_ga${GA}_g${GAMMA}"
 
-  echo "Finished $lang. Moving to next language..."
+    OUTPUT_DIR="checkpoints/eagle_${LANG_CODE}_${LABEL}"
+    # --wait blocks the loop until all 16 tasks of this language finish and clear the queue
+    sbatch --wait --export=LANG_CODE=$lang scripts/run_alpine.sh experiments/eagle_greedy.cfg -o output_dir="${OUTPUT_DIR}"
+    echo "Finished $lang. Moving to next language..."
+    wait 5
+done
