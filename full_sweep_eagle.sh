@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-echo "=================================================="
-echo "Submitting and waiting for language: $lang"
-echo "=================================================="
-
 for lang in chr haw ibo lkt mus npi oci oji que zgh zh amh yor grn aed eng deu spa hin; do
+    echo "=================================================="
+    echo "Submitting and waiting for language: $lang"
+    echo "=================================================="
     LABEL="lr${LR}_s${STEPS}_ga${GA}_g${GAMMA}"
 
     OUTPUT_DIR="checkpoints/eagle_${LANG_CODE}_${LABEL}"
