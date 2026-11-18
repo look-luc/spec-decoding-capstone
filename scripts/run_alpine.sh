@@ -23,7 +23,13 @@ export LOCAL_OUTPUT_DIR="$SLURM_TMPDIR/outputs"
 export WANDB_DIR="$SLURM_TMPDIR/wandb"
 mkdir -p "$LOCAL_OUTPUT_DIR" "$WANDB_DIR"
 
-module --ignore_cache load uv
+export PATH="$HOME/.local/bin:$PATH"
+
+if ! command -v uv &> /dev/null; then
+    echo "uv not found. Installing uv locally..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+fi
 uv sync
 
 echo "=== CUDA + PyTorch diagnostics ==="
