@@ -56,4 +56,5 @@ if [ -d "$WANDB_DIR" ]; then
 fi
 
 echo "Job execution and file synchronization complete."
-rm -rf checkpoints
+
+rm -rf checkpoints/eagle_*
