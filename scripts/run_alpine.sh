@@ -23,7 +23,7 @@ export LOCAL_OUTPUT_DIR="$SLURM_TMPDIR/outputs"
 export WANDB_DIR="$SLURM_TMPDIR/wandb"
 mkdir -p "$LOCAL_OUTPUT_DIR" "$WANDB_DIR"
 
-module load uv
+module --ignore_cache load uv
 uv sync
 
 echo "=== CUDA + PyTorch diagnostics ==="
