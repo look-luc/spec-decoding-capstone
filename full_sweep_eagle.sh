@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-for lang in mus oci que zgh amh yor grn aed; do
+for lang in oci que zgh amh yor grn aed; do
     echo "=================================================="
     echo "Submitting and waiting for language: $lang"
     echo "=================================================="
