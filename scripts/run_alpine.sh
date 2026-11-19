@@ -14,9 +14,12 @@
 
 SLURM_TMPDIR="${SLURM_SCRATCH:-/tmp/$USER/scratch}"
 export HF_HOME="/scratch/alpine/$USER/.cache/huggingface"
+export UV_CACHE_DIR="/scratch/alpine/$USER/.cache/uv"
+export UV_PROJECT_ENVIRONMENT="/scratch/alpine/$USER/.venvs/spec-decoding-capstone"
+export TMPDIR="$SLURM_TMPDIR"
 export CUDA_LAUNCH_BLOCKING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-mkdir -p $HF_HOME
+mkdir -p "$HF_HOME" "$UV_CACHE_DIR" "$TMPDIR"
 
 # 1. Define local scratch directories for active logging and checkpoints
 export LOCAL_OUTPUT_DIR="$SLURM_TMPDIR/outputs"
