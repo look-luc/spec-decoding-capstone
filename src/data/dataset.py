@@ -111,6 +111,22 @@ def standardize_columns_mono(ds: Dataset | IterableDataset, language: str, lang_
 
 
 def standardize_columns_bi(ds: Dataset | IterableDataset, language: str, lang_code: str, path: str):
+    if path == "KKKarim711/tunisian-english-parallel-pairs":
+        logger.info("Columns: %s", list(next(iter(ds)).keys()))
+        ds = ds.map(lambda r: {"origin": "KKKarim711/tunisian-english-parallel-pairs"})
+        cols = set(next(iter(ds)).keys())
+        for cand in ("english", "en", "src", "source"):
+            if cand in cols and cand != "English":
+                ds = ds.rename_column(cand, "English")
+                break
+        for cand in ("tn", "tunisian", "tunisian_arabic", "tunisian arabic", language.lower()):
+            if cand in cols and cand != language:
+                ds = ds.rename_column(cand, language)
+                break
+        ds = ds.select_columns(["English", language, "origin"])
+        bi_features = Features({"English": Value("string"), language: Value("string"), "origin": Value("string")})
+        return ds.cast(bi_features)
+
     current_cols = ds.column_names
     if current_cols is None:
         ex = next(iter(ds))
@@ -126,16 +142,49 @@ def standardize_columns_bi(ds: Dataset | IterableDataset, language: str, lang_co
     else:
         ds = ds.map(lambda r: {"origin": path})
 
-    if "english" in col_lookup and col_lookup["english"] != "English":
-        ds = ds.rename_column(col_lookup["english"], "English")
-    elif "en" in col_lookup and col_lookup["en"] != "English":
-        ds = ds.rename_column(col_lookup["en"], "English")
+    en_candidates = ["english", "en", "src", "source", "input", "inputs"]
+    for cand in en_candidates:
+        if cand in col_lookup:
+            orig_en = col_lookup[cand]
+            if orig_en != "English":
+                ds = ds.rename_column(orig_en, "English")
+            break
+    else:
+        raise KeyError(
+            f"Could not find English column for language={language!r} in columns={current_cols} (path={path!r})"
+        )
 
-    lang_key = language.lower()
-    if lang_key in col_lookup and col_lookup[lang_key] != language:
-        ds = ds.rename_column(col_lookup[lang_key], language)
-    elif lang_code.lower() in col_lookup and col_lookup[lang_code.lower()] != language:
-        ds = ds.rename_column(col_lookup[lang_code.lower()], language)
+    lang_candidates = [
+        language.lower(),
+        lang_code.lower(),
+        "tunisian",
+        "tunisian_arabic",
+        "tunisian arabic",
+        "tun",
+        "aeb",
+        "aed",
+        "tn",
+        "creek",
+        "muskogee",
+        "muskogee (creek)",
+        "Muskogee (Creek)",
+        "mus",
+        "tgt",
+        "target",
+        "output",
+        "translation",
+        "non_english",
+    ]
+    for cand in lang_candidates:
+        if cand in col_lookup and col_lookup[cand] != "English":
+            orig_lang = col_lookup[cand]
+            if orig_lang != language:
+                ds = ds.rename_column(orig_lang, language)
+            break
+    else:
+        raise KeyError(
+            f"Could not find target column for language={language!r} ({lang_code!r}) in columns={current_cols} (path={path!r})"
+        )
 
     ds = ds.select_columns(["English", language, "origin"])
     bi_features = Features({"English": Value("string"), language: Value("string"), "origin": Value("string")})
@@ -177,7 +226,9 @@ def assemble_dataset(
             continue
         assert isinstance(path, str)
 
-        if str(path).startswith("http"):
+        if path == "KKKarim711/tunisian-english-parallel-pairs":
+            ds = load_dataset("KKKarim711/tunisian-english-parallel-pairs", split="train", streaming=True)
+        elif str(path).startswith("http"):
             raw_url = get_raw_url(str(path))
             sep = "\t" if raw_url.endswith(".tsv") or "tatoeba" in raw_url.lower() else ","
             resp = requests.get(raw_url, verify=False)
