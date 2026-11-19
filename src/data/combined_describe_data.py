@@ -21,21 +21,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 languages = [
-<<<<<<< HEAD
     "amh", "ber", "chr", "grn", "haw", "ibo", "npi", "oci","que", "yor", "zgh", "aed"
-=======
-    "amh",
-    "ber",
-    "chr",
-    "grn",
-    "haw",
-    "ibo",
-    "npi",
-    "oci",
-    "que",
-    "yor",
-    "zgh",
->>>>>>> upstream/main
 ]
 
 # Cut: lkt,mus,oji
