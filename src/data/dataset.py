@@ -1,4 +1,5 @@
 import csv
+import gc
 import io
 import logging
 from collections import Counter
@@ -30,12 +31,14 @@ def get_raw_url(url: str) -> str:
         return url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
     return url
 
+
 LANGUAGES = [
-    "amh", "ber", "chr", "grn", "haw", "ibo", "npi", "oci","que", "yor", "zgh", "mus", "aed"
+    "amh", "ber", "chr", "grn", "haw", "ibo", "npi", "oci", "que", "yor", "zgh", "mus", "aed"
 ]
 
 # High/mid-resource comparison languages. English has no bilingual data
 HIGH_RESOURCE_LANGUAGES = ["eng", "deu", "spa", "hin", "zh"]
+
 
 def get_language_name(lang_code: str) -> str:
     """
@@ -43,87 +46,119 @@ def get_language_name(lang_code: str) -> str:
     e.g. 'npi' -> 'Nepali', 'chr' -> 'Cherokee'
     """
     lang_code = lang_code.strip().lower()
-    # Use utf-8-sig
     with open(REFERENCE_TABLE, newline="", encoding="utf-8-sig") as f:
         r = csv.DictReader(f)
         for row in r:
             if row["Code"].strip().lower() == lang_code:
                 return row["Language"].strip()
-    # Fallback: return the code itself if not found
-    raise ValueError()
+    raise ValueError(f"Language code not found in {REFERENCE_TABLE}: {lang_code!r}")
 
 
 mono_features = Features({"text": Value("string"), "origin": Value("string")})
 
+
 def standardize_columns_mono(ds: Dataset | IterableDataset, language: str, lang_code: str, path: str):
-    # Column standardization logic
     current_cols = ds.column_names
-    if ds.column_names is None:
+    if current_cols is None:
         ex = next(iter(ds))
         current_cols = list(ex.keys())
     assert isinstance(current_cols, list)
 
-    if "Source" in current_cols: # type:ignore
-        ds = ds.rename_column("Source", "origin")
-    elif "source" in current_cols: # type:ignore
-        ds = ds.rename_column("source", "origin")
+    col_lookup = {c.lower(): c for c in current_cols}
+
+    if "source" in col_lookup:
+        src_col = col_lookup["source"]
+        if src_col != "origin":
+            ds = ds.rename_column(src_col, "origin")
     else:
         ds = ds.map(lambda r: {"origin": path})
 
-    if "text" not in current_cols:
-        # Expanded search list to include 'Mayan', 'Source', and 'Target'
+    if "text" not in col_lookup:
         search_cols = [
-            language, lang_code, language.lower(),
-            "Mayan", "Mayan language",  # Specific to yua datasets
-            "sentence", "text_sentence", "content", "Article",
-            "Source", "Target","inputs"         # Common in parallel-formatted mono data
-            "aed", "TUN", "Tunis", "tunisian", "Tunisian", "tn"
+            language,
+            language.lower(),
+            lang_code,
+            lang_code.lower(),
+            lang_code.upper(),
+            "Mayan",
+            "Mayan language",
+            "sentence",
+            "text_sentence",
+            "content",
+            "Article",
+            "Source",
+            "Target",
+            "inputs",
+            "aed",
+            "TUN",
+            "Tunis",
+            "tunisian",
+            "Tunisian",
+            "tn",
         ]
         for col in search_cols:
-            if col in current_cols:
-                ds = ds.rename_column(col, "text")
+            matched_col = col_lookup.get(col.lower())
+            if matched_col is not None and matched_col != "text":
+                ds = ds.rename_column(matched_col, "text")
                 break
         else:
-            raise AssertionError("Could not find matching column")
+            raise KeyError(
+                f"Could not find matching text column for language={language!r} ({lang_code!r}) in columns={current_cols} (path={path!r})"
+            )
+
     ds = ds.select_columns(["text", "origin"])
     return ds.cast(mono_features)
 
 
 def standardize_columns_bi(ds: Dataset | IterableDataset, language: str, lang_code: str, path: str):
     current_cols = ds.column_names
-    if ds.column_names is None:
+    if current_cols is None:
         ex = next(iter(ds))
         current_cols = list(ex.keys())
     assert isinstance(current_cols, list)
 
-    if "Source" in current_cols: # type:ignore
-        ds = ds.rename_column("Source", "origin")
-    elif "source" in current_cols: # type:ignore
-        ds = ds.rename_column("source", "origin")
+    col_lookup = {c.lower(): c for c in current_cols}
+
+    if "source" in col_lookup:
+        src_col = col_lookup["source"]
+        if src_col != "origin":
+            ds = ds.rename_column(src_col, "origin")
     else:
         ds = ds.map(lambda r: {"origin": path})
 
-    if 'english' in current_cols:
-        ds = ds.rename_column('english', "English")
-    elif 'en' in current_cols:
-        ds = ds.rename_column('en', "English")
-    if language.lower() in current_cols:
-        ds = ds.rename_column(language.lower(), language)
-    ds = ds.select_columns(['English', language, "origin"])
+    if "english" in col_lookup and col_lookup["english"] != "English":
+        ds = ds.rename_column(col_lookup["english"], "English")
+    elif "en" in col_lookup and col_lookup["en"] != "English":
+        ds = ds.rename_column(col_lookup["en"], "English")
+
+    lang_key = language.lower()
+    if lang_key in col_lookup and col_lookup[lang_key] != language:
+        ds = ds.rename_column(col_lookup[lang_key], language)
+    elif lang_code.lower() in col_lookup and col_lookup[lang_code.lower()] != language:
+        ds = ds.rename_column(col_lookup[lang_code.lower()], language)
+
+    ds = ds.select_columns(["English", language, "origin"])
     bi_features = Features({"English": Value("string"), language: Value("string"), "origin": Value("string")})
     return ds.cast(bi_features)
 
 
-def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max_samples: int | None = None, include_aya=True):
-    file = "reference_table_monolingual.csv" if type=="mono" else "reference_table_bilingual.csv"
+def assemble_dataset(
+    lang_code: str,
+    type: Literal["mono", "bi"],
+    tokenizer,
+    max_samples: int | None = None,
+    include_aya=True,
+):
+    file = "reference_table_monolingual.csv" if type == "mono" else "reference_table_bilingual.csv"
     file_path = DATA_DIR / file
     language = get_language_name(lang_code)
 
     dropped = 0
+
     def filter_one_tokens(row):
         nonlocal dropped
-        if type == 'mono':
-            text = row['text']
+        if type == "mono":
+            text = row["text"]
         else:
             text = row[language]
         if text is None:
@@ -138,30 +173,29 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
     dataset_list = []
     for _, row in paths.iterrows():
         path = row["hugging face"]
-        if "aya_dataset" in path:
+        if "aya_dataset" in str(path):
             continue
         assert isinstance(path, str)
 
         if str(path).startswith("http"):
             raw_url = get_raw_url(str(path))
-            sep = '\t' if raw_url.endswith('.tsv') or 'tatoeba' in raw_url.lower() else ','
+            sep = "\t" if raw_url.endswith(".tsv") or "tatoeba" in raw_url.lower() else ","
             resp = requests.get(raw_url, verify=False)
             resp.raise_for_status()
             temp_df = pd.read_csv(io.BytesIO(resp.content), sep=sep)
             ds = Dataset.from_pandas(temp_df)
         else:
-            # HF dataset
             repo = path
             config = None
             split_to_load = "train"
-            if ':' in path:
+            if ":" in path:
                 parts = path.split(":")
                 repo = parts[0]
                 config = parts[1]
                 if len(parts) > 2:
                     split_to_load = parts[2]
 
-            for split in [split_to_load, 'full', lang_code]:
+            for split in [split_to_load, "full", lang_code]:
                 try:
                     ds = load_dataset(repo, config, split=split, streaming=True)
                     assert isinstance(ds, IterableDataset)
@@ -171,16 +205,19 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
                     continue
             else:
                 raise ValueError(f"No split matching {[split_to_load, 'full', lang_code]} in {repo}")
-            if repo == 'Helsinki-NLP/opus-100':
-                # Pair configs are keyed by 2-letter codes (e.g. 'de', 'hi'), so take whichever side isn't English
-                ds = ds.map(lambda r: {"English": r['translation']['en'], language: next(v for k, v in r['translation'].items() if k != 'en')})
+            if repo == "Helsinki-NLP/opus-100":
+                ds = ds.map(
+                    lambda r: {
+                        "English": r["translation"]["en"],
+                        language: next(v for k, v in r["translation"].items() if k != "en"),
+                    }
+                )
 
-        if type == 'mono':
+        if type == "mono":
             ds = standardize_columns_mono(ds, language, lang_code, path)
         else:
             ds = standardize_columns_bi(ds, language, lang_code, path)
 
-        # Filter and turn into real dataset
         dropped = 0
         ds = ds.filter(filter_one_tokens)
         if isinstance(ds, IterableDataset):
@@ -188,9 +225,8 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
                 stream = ds
             else:
                 stream = ds.take(max_samples)
-            ds = Dataset.from_list(list(stream)) # type:ignore
+            ds = Dataset.from_list(list(stream))  # type:ignore
             del stream
-            import gc
             gc.collect()
         else:
             if max_samples is not None:
@@ -199,7 +235,7 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
 
         dataset_list.append(ds)
 
-    if type == 'mono' and include_aya:
+    if type == "mono" and include_aya:
         aya_dataset = load_dataset("CohereLabs/aya_dataset", split="train")
         aya_dataset = cast(Dataset, aya_dataset.filter(lambda x: x["language"].lower() == language.lower()))
         if len(aya_dataset) != 0:
@@ -214,7 +250,9 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
             dataset_list.append(aya_dataset)
 
     if not dataset_list:
-        raise ValueError(f"No datasets found for {language}")
+        raise ValueError(
+            f"No datasets found for {language!r} (code={lang_code!r}, type={type!r}, matched_ref_rows={len(paths)}, include_aya={include_aya})"
+        )
     dataset: Dataset = concatenate_datasets(dataset_list)
     if max_samples and max_samples > 0 and len(dataset) > max_samples:
         old_size = len(dataset)
@@ -223,8 +261,8 @@ def assemble_dataset(lang_code: str, type: Literal["mono", "bi"], tokenizer, max
     logger.info(f"Data source breakdown: {Counter(dataset['origin'])}")
     splits = dataset.train_test_split(test_size=0.2, seed=42)
 
-    if type == 'bi':
-        splits["test"] = splits["test"].select(range(min(1000, len(splits['test']))))
+    if type == "bi":
+        splits["test"] = splits["test"].select(range(min(1000, len(splits["test"]))))
 
     logger.info(f"Data splits: {splits}")
     return splits

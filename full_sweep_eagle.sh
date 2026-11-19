@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-for lang in mus amh yor grn aed eng deu spa hin zh; do
+for lang in mus aed; do
     echo "=================================================="
     echo "Submitting and waiting for language: $lang"
     echo "=================================================="
