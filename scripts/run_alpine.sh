@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=7:30:00
+#SBATCH --time=9:30:00
 #SBATCH --output=/projects/%u/spec-decoding-capstone/logs/%j.log
 #SBATCH --job-name=specdec_l40
 #SBATCH --account=ucb-general
