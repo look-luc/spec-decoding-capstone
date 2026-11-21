@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-for lang in chr; do
+for lang in que zgh zh amh; do
     echo "=================================================="
     echo "Submitting and waiting for language: $lang"
     echo "=================================================="
