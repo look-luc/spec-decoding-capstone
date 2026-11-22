@@ -442,8 +442,10 @@ if __name__ == "__main__":
 
     if args.diagnose:
         run_divergence_audit(config)
+
     else:
         try:
             run(config)
+            os.rmdir(f"{conig.output_dir}_{config.lang}")
         finally:
             wandb.finish()
