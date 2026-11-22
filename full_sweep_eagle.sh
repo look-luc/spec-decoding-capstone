@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-for lang in que zgh zh amh; do
+for lang in ber chr haw ibo lkt mus npi oci oji que zgh zh amh yor grn aed deu spa hin; do
     echo "=================================================="
     echo "Submitting and waiting for language: $lang"
     echo "=================================================="
