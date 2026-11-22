@@ -446,6 +446,6 @@ if __name__ == "__main__":
     else:
         try:
             run(config)
-            os.rmdir(f"eagle_{config.lang}")
+            os.rmdir(f"checkpoints/eagle_{config.lang}")
         finally:
             wandb.finish()
