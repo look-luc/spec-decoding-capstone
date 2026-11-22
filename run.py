@@ -446,6 +446,6 @@ if __name__ == "__main__":
     else:
         try:
             run(config)
-            os.rmdir(f"{config.output_dir}_{config.lang}")
+            os.rmdir(f"eagle_{config.lang}")
         finally:
             wandb.finish()
