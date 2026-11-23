@@ -225,11 +225,17 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
         state_dict = torch.load(checkpoint_path, map_location=device)
         ckpt_layers = EagleModule.infer_num_layers(state_dict)
         if ckpt_layers != config.num_layers:
-            raise ValueError(
-                f"Checkpoint has num_layers={ckpt_layers}, which does not match "
-                f"config.num_layers={config.num_layers} (output_dir={config.output_dir})."
+            if getattr(config, "eval_only", False) or getattr(config, "mode", "") == "eval":
+                raise ValueError(
+                    f"Checkpoint has num_layers={ckpt_layers}, which does not match "
+                    f"config.num_layers={config.num_layers} (output_dir={config.output_dir})."
+                )
+            logger.warning(
+                f"Checkpoint has num_layers={ckpt_layers}, which does not match config.num_layers={config.num_layers}; "
+                f"starting fresh EagleModule(num_layers={config.num_layers}) in {config.output_dir}."
             )
-        draft_model.load_checkpoint_state_dict(state_dict)
+        else:
+            draft_model.load_checkpoint_state_dict(state_dict)
         draft_model.eval()
 
     elif config.draft_model_type == "ngram":

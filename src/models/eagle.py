@@ -5,7 +5,7 @@ import torch.nn as nn
 
 
 class EagleModule(nn.Module):
-    def __init__(self, vocab_size: int, embed_dim: int, hidden_dim: int, num_heads: int = 8, num_layers: int = 4):
+    def __init__(self, vocab_size: int, embed_dim: int, hidden_dim: int, num_heads: int = 8, num_layers: int = 6):
         super().__init__()
         self.num_heads = num_heads
         self.num_layers = num_layers

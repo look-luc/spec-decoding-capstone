@@ -97,7 +97,7 @@ def generate_output(
                     embed_dim=getattr(config, "embed_dim", target_hidden_dim),
                     hidden_dim=target_hidden_dim,
                     num_heads=getattr(config, "num_heads", 8),
-                    num_layers=getattr(config, "num_layers", 4)
+                    num_layers=getattr(config, "num_layers", 6)
                 ).to(config.device)
 
                 if os.path.exists(checkpoint_path):
