@@ -223,7 +223,7 @@ def run(config: ExperimentConfig | MedusaConfig | EagleConfig):
         ).to(device)
 
         state_dict = torch.load(checkpoint_path, map_location=device)
-        draft_model.load_state_dict(state_dict)
+        draft_model.load_checkpoint_state_dict(state_dict)
         draft_model.eval()
 
     elif config.draft_model_type == "ngram":
@@ -446,6 +446,6 @@ if __name__ == "__main__":
     else:
         try:
             run(config)
-            os.rmdir(f"checkpoints/eagle_{config.lang}")
+            os.rmdir(f"./checkpoints/eagle_{config.lang}")
         finally:
             wandb.finish()
