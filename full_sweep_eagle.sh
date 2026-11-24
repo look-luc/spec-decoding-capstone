@@ -14,7 +14,7 @@ case "$TREE_CHOICES" in
   *)              GAMMA="${GAMMA:-4}" ;;
 esac
 
-for lang in ber chr haw ibo lkt mus npi oci oji que zgh zh amh yor grn aed deu spa hin; do
+for lang in oci que zgh zh amh yor grn aed deu spa hin; do
     OUT_DIR="checkpoints/eagle_${lang}_l${NUM_LAYERS}_${TREE_CHOICES}_g${GAMMA}"
     echo "=================================================="
     echo "Submitting language: $lang | num_layers=$NUM_LAYERS | tree=$TREE_CHOICES | gamma=$GAMMA | beta=$BETA"
